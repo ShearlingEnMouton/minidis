@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ include "minidisservice.name" . }}-cm"
+  labels:
+{{ include "minidisservice.labels" . | indent 4 }}
+data:
+  EXPOSE_PORT: {{ .Values.port | quote }}
+  BIND_ADDR: {{ .Values.bindAddress | quote }}
+  LOG_LEVEL: {{ .Values.logLevel | quote }}
