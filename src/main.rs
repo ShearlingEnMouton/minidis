@@ -55,7 +55,7 @@ async fn handle_client(mut stream: TcpStream, store: &Store) -> tokio::io::Resul
                             let response = cmd.execute(store);
                             stream.write_all(&response).await?;
                         }
-                        Err(e) => stream.write_all(e.to_resp()).await?,
+                        Err(e) => stream.write_all(&e.to_resp()).await?,
                     }
                 }
                 Ok(None) => break,

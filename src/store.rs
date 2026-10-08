@@ -77,4 +77,33 @@ impl Store {
             },
         }
     }
+    pub fn expire(&self, key: &[u8], ttl: Duration) -> u8 {
+        let mut data = self.data.lock().unwrap();
+        if data.get(key).is_some_and(|e| e.is_expired()) {
+            data.remove(key);
+            return 0;
+        }
+
+        match data.get_mut(key) {
+            Some(entry) => {
+                entry.expires_at = Some(Instant::now() + ttl);
+                1
+            }
+            None => 0,
+        }
+    }
+    pub fn persist(&self, key: &[u8]) -> u8 {
+        let mut data = self.data.lock().unwrap();
+        if data.get(key).is_some_and(|e| e.is_expired()) {
+            return 0;
+        }
+
+        match data.get_mut(key) {
+            Some(entry) if entry.expires_at.is_some() => {
+                entry.expires_at = None;
+                1
+            }
+            _ => 0,
+        }
+    }
 }
