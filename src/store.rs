@@ -1,3 +1,4 @@
+use std::time::{Duration, Instant};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -5,7 +6,18 @@ use std::{
 
 #[derive(Clone)]
 pub struct Store {
-    data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
+    data: Arc<Mutex<HashMap<Vec<u8>, Entry>>>,
+}
+
+struct Entry {
+    value: Vec<u8>,
+    expires_at: Option<Instant>,
+}
+
+impl Entry {
+    fn is_expired(&self) -> bool {
+        self.expires_at.is_some_and(|t| Instant::now() >= t)
+    }
 }
 
 impl Default for Store {
@@ -21,15 +33,29 @@ impl Store {
         }
     }
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data.lock().unwrap().get(key).cloned()
+        let mut data = self.data.lock().unwrap();
+        if data.get(key).is_some_and(|e| e.is_expired()) {
+            data.remove(key);
+        }
+        data.get(key).map(|e| e.value.clone())
     }
-    pub fn set(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.data.lock().unwrap().insert(key, value);
+    pub fn set(&self, key: Vec<u8>, value: Vec<u8>, ttl: Option<Duration>) {
+        let expires_at = ttl.map(|d| Instant::now() + d);
+        self.data
+            .lock()
+            .unwrap()
+            .insert(key, Entry { value, expires_at });
     }
     pub fn del(&self, keys: &[Vec<u8>]) -> usize {
         let mut data = self.data.lock().unwrap();
-        keys.iter()
-            .filter(|key| data.remove(*key).is_some())
-            .count()
+        let mut removed = 0;
+        for key in keys {
+            if let Some(entry) = data.remove(key)
+                && !entry.is_expired()
+            {
+                removed += 1;
+            }
+        }
+        removed
     }
 }

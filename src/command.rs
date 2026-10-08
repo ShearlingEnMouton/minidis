@@ -1,17 +1,31 @@
 use crate::store::Store;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum Command {
-    Ping { message: Option<Vec<u8>> },
-    Get { key: Vec<u8> },
-    Set { key: Vec<u8>, value: Vec<u8> },
-    Del { keys: Vec<Vec<u8>> },
+    Ping {
+        message: Option<Vec<u8>>,
+    },
+    Get {
+        key: Vec<u8>,
+    },
+    Set {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        ttl: Option<Duration>,
+    },
+    Del {
+        keys: Vec<Vec<u8>>,
+    },
 }
 
 #[derive(Debug)]
 pub enum CommandError {
     UnknownCommand,
     WrongArity,
+    NotAnInteger,
+    InvalidExpire,
+    SyntaxError,
 }
 
 impl CommandError {
@@ -19,6 +33,9 @@ impl CommandError {
         match self {
             CommandError::UnknownCommand => b"-ERR unknown command\r\n",
             CommandError::WrongArity => b"-ERR wrong number of arguments\r\n",
+            CommandError::NotAnInteger => b"-ERR value is not a valid integer\r\n",
+            CommandError::InvalidExpire => b"-ERR invalid expiration time\r\n",
+            CommandError::SyntaxError => b"-ERR syntax error\r\n",
         }
     }
 }
@@ -45,7 +62,28 @@ impl Command {
                 3 => Ok(Command::Set {
                     key: args[1].clone(),
                     value: args[2].clone(),
+                    ttl: None,
                 }),
+                5 => {
+                    let raw = args[4].clone();
+                    let string_num =
+                        std::str::from_utf8(&raw).map_err(|_| CommandError::NotAnInteger)?;
+                    let parsed: u64 = string_num.parse().map_err(|_| CommandError::NotAnInteger)?;
+                    let ttl = match args[3].to_ascii_uppercase().as_slice() {
+                        b"EX" => Duration::from_secs(parsed),
+                        b"PX" => Duration::from_millis(parsed),
+                        _ => return Err(CommandError::SyntaxError),
+                    };
+                    if ttl.is_zero() || Instant::now().checked_add(ttl).is_none() {
+                        return Err(CommandError::InvalidExpire);
+                    }
+
+                    Ok(Command::Set {
+                        key: args[1].clone(),
+                        value: args[2].clone(),
+                        ttl: Some(ttl),
+                    })
+                }
                 _ => Err(CommandError::WrongArity),
             },
             b"DEL" => match args.len() {
@@ -78,8 +116,8 @@ impl Command {
                     response
                 }
             },
-            Command::Set { key, value } => {
-                store.set(key, value);
+            Command::Set { key, value, ttl } => {
+                store.set(key, value, ttl);
                 b"+OK\r\n".to_vec()
             }
             Command::Del { keys } => {
