@@ -26,6 +26,12 @@ impl Default for Store {
     }
 }
 
+pub enum TtlStatus {
+    NoKey,
+    NoExpiry,
+    Remaining(Duration),
+}
+
 impl Store {
     pub fn new() -> Store {
         Self {
@@ -57,5 +63,18 @@ impl Store {
             }
         }
         removed
+    }
+    pub fn ttl(&self, key: &[u8]) -> TtlStatus {
+        let mut data = self.data.lock().unwrap();
+        if data.get(key).is_some_and(|e| e.is_expired()) {
+            data.remove(key);
+        }
+        match data.get(key) {
+            None => TtlStatus::NoKey,
+            Some(e) => match e.expires_at {
+                None => TtlStatus::NoExpiry,
+                Some(t) => TtlStatus::Remaining(t.saturating_duration_since(Instant::now())),
+            },
+        }
     }
 }

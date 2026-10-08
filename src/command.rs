@@ -1,4 +1,4 @@
-use crate::store::Store;
+use crate::store::{Store, TtlStatus};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -16,6 +16,12 @@ pub enum Command {
     },
     Del {
         keys: Vec<Vec<u8>>,
+    },
+    Ttl {
+        key: Vec<u8>,
+    },
+    Pttl {
+        key: Vec<u8>,
     },
 }
 
@@ -92,6 +98,18 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity),
             },
+            b"TTL" => match args.len() {
+                2 => Ok(Command::Ttl {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity),
+            },
+            b"PTTL" => match args.len() {
+                2 => Ok(Command::Pttl {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity),
+            },
             _ => Err(CommandError::UnknownCommand),
         }
     }
@@ -124,6 +142,18 @@ impl Command {
                 let removed = store.del(&keys);
                 format!(":{removed}\r\n").into_bytes()
             }
+            Command::Ttl { key } => match store.ttl(&key) {
+                TtlStatus::NoKey => b":-2\r\n".to_vec(),
+                TtlStatus::NoExpiry => b":-1\r\n".to_vec(),
+                TtlStatus::Remaining(d) => {
+                    format!(":{}\r\n", (d.as_millis() + 500) / 1000).into_bytes()
+                }
+            },
+            Command::Pttl { key } => match store.ttl(&key) {
+                TtlStatus::NoKey => b":-2\r\n".to_vec(),
+                TtlStatus::NoExpiry => b":-1\r\n".to_vec(),
+                TtlStatus::Remaining(d) => format!(":{}\r\n", d.as_millis()).into_bytes(),
+            },
         }
     }
 }
