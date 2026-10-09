@@ -1,5 +1,11 @@
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use std::time::Duration;
+
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    task,
+    time::{MissedTickBehavior, interval},
+};
 
 use crate::command::Command;
 use crate::store::Store;
@@ -17,7 +23,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr.clone()).await?;
     log_info!("Listening on: {}", addr);
 
+    let purge_limit: u64 = match std::env::var("PURGE_LIMIT") {
+        Ok(v) => v.parse().expect("PURGE_LIMIT must be a positive integer"),
+        Err(_) => 1000,
+    };
+
+    let purge_int: u64 = match std::env::var("PURGE_INTERVAL") {
+        Ok(v) => v
+            .parse()
+            .expect("PURGE_INTERVAL must be a positive integer"),
+        Err(_) => 100,
+    };
+
+    if purge_limit == 0 || purge_int == 0 {
+        log_err!("purge_limit and purge_int should be a positive value");
+        return Err("purge_limit and purge_int should be a positive value".into());
+    }
+
     let store = Store::new();
+
+    let reaper_store = store.clone();
+    task::spawn(async move {
+        let mut purge_interval = interval(Duration::from_millis(purge_int));
+        purge_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            let purged = reaper_store.purge_expired(purge_limit);
+            log_debug!("{purged} expired data have been purged.");
+            if purged == purge_limit {
+                task::yield_now().await;
+                continue;
+            }
+            purge_interval.tick().await;
+        }
+    });
 
     loop {
         let (socket, peer_addr) = listener.accept().await?;
@@ -55,7 +94,7 @@ async fn handle_client(mut stream: TcpStream, store: &Store) -> tokio::io::Resul
                             let response = cmd.execute(store);
                             stream.write_all(&response).await?;
                         }
-                        Err(e) => stream.write_all(e.to_resp()).await?,
+                        Err(e) => stream.write_all(&e.to_resp()).await?,
                     }
                 }
                 Ok(None) => break,
