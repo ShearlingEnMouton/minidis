@@ -2,3 +2,4 @@
 *.aof
 .env*
 structure
+/docs
