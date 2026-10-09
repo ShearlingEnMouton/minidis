@@ -1,6 +1,5 @@
 use std::{
-    collections::BTreeSet,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -9,13 +8,21 @@ use std::{
 pub struct Store {
     inner: Arc<Mutex<Inner>>,
 }
+pub enum StoreError {
+    WrongType,
+}
 struct Inner {
     data: HashMap<Vec<u8>, Entry>,
     expirations: BTreeSet<(Instant, Vec<u8>)>,
 }
 
+enum EntryType {
+    Value(Vec<u8>),
+    List(VecDeque<Vec<u8>>),
+    Hash(HashMap<Vec<u8>, Vec<u8>>),
+}
 struct Entry {
-    value: Vec<u8>,
+    value: EntryType,
     expires_at: Option<Instant>,
 }
 
@@ -46,10 +53,16 @@ impl Store {
             })),
         }
     }
-    pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         let mut g = self.inner.lock().unwrap();
         g.purge_if_expired(key);
-        g.data.get(key).map(|e| e.value.clone())
+        match g.data.get(key) {
+            None => Ok(None),
+            Some(e) => match &e.value {
+                EntryType::Value(v) => Ok(Some(v.clone())),
+                _ => Err(StoreError::WrongType),
+            },
+        }
     }
     pub fn set(&self, key: Vec<u8>, value: Vec<u8>, ttl: Option<Duration>) {
         let expires_at = ttl.map(|d| Instant::now() + d);
@@ -109,7 +122,7 @@ impl Inner {
         if let Some(t) = expires_at {
             self.expirations.insert((t, key.clone()));
         }
-        self.data.insert(key, Entry { value, expires_at });
+        self.data.insert(key, Entry { value: EntryType::Value(value), expires_at });
     }
 
     fn set_expiry(&mut self, key: &[u8], new: Option<Instant>) -> bool {

@@ -1,6 +1,5 @@
-use crate::store::{Store, TtlStatus};
+use crate::store::{Store, StoreError, TtlStatus};
 use std::time::{Duration, Instant};
-
 #[derive(Debug)]
 pub enum Command {
     Ping {
@@ -40,6 +39,14 @@ pub enum CommandError {
     NotAnInteger,
     InvalidExpire(&'static str),
     SyntaxError,
+    WrongType,
+}
+impl From<StoreError> for CommandError {
+    fn from(e: StoreError) -> Self {
+        match e {
+            StoreError::WrongType => CommandError::WrongType,
+        }
+    }
 }
 
 impl CommandError {
@@ -58,6 +65,9 @@ impl CommandError {
                 format!("-ERR invalid expire time in '{cmd}' command\r\n")
             }
             CommandError::SyntaxError => "-ERR syntax error\r\n".to_string(),
+            CommandError::WrongType => {
+                "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n".to_string()
+            }
         }
         .into_bytes()
     }
@@ -207,13 +217,14 @@ impl Command {
                 response
             }
             Command::Get { key } => match store.get(&key) {
-                None => b"$-1\r\n".to_vec(),
-                Some(value) => {
+                Ok(None) => b"$-1\r\n".to_vec(),
+                Ok(Some(value)) => {
                     let mut response = format!("${}\r\n", value.len()).into_bytes();
                     response.extend_from_slice(&value);
                     response.extend_from_slice(b"\r\n");
                     response
                 }
+                Err(e) => CommandError::from(e).to_resp(),
             },
             Command::Set { key, value, ttl } => {
                 store.set(key, value, ttl);
