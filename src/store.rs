@@ -89,6 +89,10 @@ impl Store {
     pub fn purge_expired(&self, limit: u64) -> u64 {
         self.inner.lock().unwrap().purge_expired(limit)
     }
+    pub fn dbsize(&self) -> usize {
+        let mut g = self.inner.lock().unwrap();
+        g.dbsize()
+    }
 }
 
 impl Inner {
@@ -127,6 +131,7 @@ impl Inner {
             self.remove(key);
         }
     }
+
     fn purge_expired(&mut self, limit: u64) -> u64 {
         let now = Instant::now();
         let mut removed = 0;
@@ -138,5 +143,9 @@ impl Inner {
             removed += 1;
         }
         removed
+    }
+
+    fn dbsize(&mut self) -> usize {
+        self.data.len()
     }
 }

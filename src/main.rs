@@ -24,9 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_info!("Listening on: {}", addr);
 
     let purge_limit: u64 = match std::env::var("PURGE_LIMIT") {
-        Ok(v) => v
-            .parse()
-            .expect("PURGE_LIMIT must be a positive integer"),
+        Ok(v) => v.parse().expect("PURGE_LIMIT must be a positive integer"),
         Err(_) => 1000,
     };
 

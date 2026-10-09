@@ -30,6 +30,7 @@ pub enum Command {
     Persist {
         key: Vec<u8>,
     },
+    Dbsize {},
 }
 
 #[derive(Debug)]
@@ -186,6 +187,10 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("persist")),
             },
+            b"DBSIZE" => match args.len() {
+                1 => Ok(Command::Dbsize {}),
+                _ => Err(CommandError::WrongArity("dbsize")),
+            },
             _ => Err(CommandError::unknown_command(args)),
         }
     }
@@ -238,6 +243,7 @@ impl Command {
                 let result = store.persist(&key);
                 format!(":{result}\r\n").into_bytes()
             }
+            Command::Dbsize {} => format!(":{}\r\n", store.dbsize()).into_bytes(),
         }
     }
 }
