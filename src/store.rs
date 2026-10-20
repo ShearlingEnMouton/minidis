@@ -66,7 +66,10 @@ impl Store {
     }
     pub fn set(&self, key: Vec<u8>, value: Vec<u8>, ttl: Option<Duration>) {
         let expires_at = ttl.map(|d| Instant::now() + d);
-        self.inner.lock().unwrap().insert(key, value, expires_at);
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(key, EntryType::Value(value), expires_at);
     }
     pub fn del(&self, keys: &[Vec<u8>]) -> usize {
         let mut g = self.inner.lock().unwrap();
@@ -106,6 +109,116 @@ impl Store {
         let mut g = self.inner.lock().unwrap();
         g.dbsize()
     }
+
+    pub fn lpush(&self, key: Vec<u8>, values: Vec<Vec<u8>>) -> Result<usize, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        g.purge_if_expired(&key);
+
+        match g.data.get_mut(&key) {
+            None => {
+                let len = values.len();
+                let rev_value: VecDeque<Vec<u8>> = values.into_iter().rev().collect();
+                g.insert(key, EntryType::List(rev_value), None);
+                Ok(len)
+            }
+            Some(e) => match &mut e.value {
+                EntryType::List(list) => {
+                    for v in values {
+                        list.push_front(v)
+                    }
+                    Ok(list.len())
+                }
+                _ => Err(StoreError::WrongType),
+            },
+        }
+    }
+    pub fn rpush(&self, key: Vec<u8>, values: Vec<Vec<u8>>) -> Result<usize, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        g.purge_if_expired(&key);
+
+        match g.data.get_mut(&key) {
+            None => {
+                let len = values.len();
+                let value: VecDeque<Vec<u8>> = values.into_iter().collect();
+                g.insert(key, EntryType::List(value), None);
+                Ok(len)
+            }
+            Some(e) => match &mut e.value {
+                EntryType::List(list) => {
+                    list.extend(values);
+                    Ok(list.len())
+                }
+                _ => Err(StoreError::WrongType),
+            },
+        }
+    }
+    pub fn lpop(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        g.purge_if_expired(key);
+
+        match g.data.get_mut(key) {
+            None => Ok(None),
+            Some(e) => {
+                let (removed, now_empty) = match &mut e.value {
+                    EntryType::List(list) => {
+                        let v = list.pop_front();
+                        (v, list.is_empty())
+                    }
+                    _ => return Err(StoreError::WrongType),
+                };
+                if now_empty {
+                    g.remove(key);
+                }
+                Ok(removed)
+            }
+        }
+    }
+    pub fn rpop(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        g.purge_if_expired(key);
+
+        match g.data.get_mut(key) {
+            None => Ok(None),
+            Some(e) => {
+                let (removed, now_empty) = match &mut e.value {
+                    EntryType::List(list) => {
+                        let v = list.pop_back();
+                        (v, list.is_empty())
+                    }
+                    _ => return Err(StoreError::WrongType),
+                };
+                if now_empty {
+                    g.remove(key);
+                }
+                Ok(removed)
+            }
+        }
+    }
+    pub fn llen(&self, key: &[u8]) -> Result<usize, StoreError> {
+        todo!()
+    }
+    pub fn lrange(&self, key: &[u8], start: i64, stop: i64) -> Result<Vec<Vec<u8>>, StoreError> {
+        todo!()
+    }
+
+    pub fn hset(&self, key: Vec<u8>, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<usize, StoreError> {
+        todo!()
+    }
+    pub fn hget(&self, key: &[u8], field: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        todo!()
+    }
+    pub fn hdel(&self, key: &[u8], fields: &[Vec<u8>]) -> Result<usize, StoreError> {
+        todo!()
+    }
+    pub fn hlen(&self, key: &[u8]) -> Result<usize, StoreError> {
+        todo!()
+    }
+    pub fn hexists(&self, key: &[u8], field: &[u8]) -> Result<bool, StoreError> {
+        todo!()
+    }
+    pub fn hgetall(&self, key: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        todo!()
+    }
 }
 
 impl Inner {
@@ -117,12 +230,12 @@ impl Inner {
         Some(entry)
     }
 
-    fn insert(&mut self, key: Vec<u8>, value: Vec<u8>, expires_at: Option<Instant>) {
+    fn insert(&mut self, key: Vec<u8>, value: EntryType, expires_at: Option<Instant>) {
         self.remove(&key);
         if let Some(t) = expires_at {
             self.expirations.insert((t, key.clone()));
         }
-        self.data.insert(key, Entry { value: EntryType::Value(value), expires_at });
+        self.data.insert(key, Entry { value, expires_at });
     }
 
     fn set_expiry(&mut self, key: &[u8], new: Option<Instant>) -> bool {
