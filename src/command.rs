@@ -1,90 +1,15 @@
+mod error;
+mod reply;
+mod types;
+
 use crate::store::{Store, TtlStatus};
+use error::CommandError;
+pub use reply::Reply;
 use std::time::{Duration, Instant};
-
-#[derive(Debug)]
-pub enum Command {
-    Ping {
-        message: Option<Vec<u8>>,
-    },
-    Get {
-        key: Vec<u8>,
-    },
-    Set {
-        key: Vec<u8>,
-        value: Vec<u8>,
-        ttl: Option<Duration>,
-    },
-    Del {
-        keys: Vec<Vec<u8>>,
-    },
-    Ttl {
-        key: Vec<u8>,
-    },
-    Pttl {
-        key: Vec<u8>,
-    },
-    Expire {
-        key: Vec<u8>,
-        ttl: Duration,
-    },
-    Persist {
-        key: Vec<u8>,
-    },
-    Dbsize {},
-}
-
-#[derive(Debug)]
-pub enum CommandError {
-    UnknownCommand { name: String, args: String },
-    WrongArity(&'static str),
-    NotAnInteger,
-    InvalidExpire(&'static str),
-    SyntaxError,
-}
-
-impl CommandError {
-    pub fn to_resp(&self) -> Vec<u8> {
-        match self {
-            CommandError::UnknownCommand { name, args } => {
-                format!("-ERR unknown command '{name}', with args beginning with: {args}\r\n")
-            }
-            CommandError::WrongArity(cmd) => {
-                format!("-ERR wrong number of arguments for '{cmd}' command\r\n")
-            }
-            CommandError::NotAnInteger => {
-                "-ERR value is not an integer or out of range\r\n".to_string()
-            }
-            CommandError::InvalidExpire(cmd) => {
-                format!("-ERR invalid expire time in '{cmd}' command\r\n")
-            }
-            CommandError::SyntaxError => "-ERR syntax error\r\n".to_string(),
-        }
-        .into_bytes()
-    }
-
-    fn unknown_command(args: &[Vec<u8>]) -> CommandError {
-        let clean = |b: &[u8]| -> String {
-            String::from_utf8_lossy(&b[..b.len().min(128)])
-                .chars()
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .collect()
-        };
-        let mut rest = String::new();
-        for arg in &args[1..] {
-            if rest.len() >= 128 {
-                break;
-            }
-            rest.push_str(&format!("'{}' ", clean(arg)));
-        }
-        CommandError::UnknownCommand {
-            name: clean(&args[0]),
-            args: rest,
-        }
-    }
-}
+pub use types::Command;
 
 impl Command {
-    fn parse_ttl_arg(arg: &[u8]) -> Result<i64, CommandError> {
+    fn parse_int(arg: &[u8]) -> Result<i64, CommandError> {
         let s = std::str::from_utf8(arg).map_err(|_| CommandError::NotAnInteger)?;
         s.parse().map_err(|_| CommandError::NotAnInteger)
     }
@@ -94,7 +19,7 @@ impl Command {
         unit: fn(u64) -> Duration,
         name: &'static str,
     ) -> Result<Command, CommandError> {
-        let n = Self::parse_ttl_arg(arg)?;
+        let n = Self::parse_int(arg)?;
         if n <= 0 {
             return Ok(Command::Del {
                 keys: vec![key.to_vec()],
@@ -134,7 +59,7 @@ impl Command {
                     ttl: None,
                 }),
                 5 => {
-                    let parsed: i64 = Self::parse_ttl_arg(&args[4])?;
+                    let parsed: i64 = Self::parse_int(&args[4])?;
                     if parsed <= 0 {
                         return Err(CommandError::InvalidExpire("set"));
                     }
@@ -156,7 +81,7 @@ impl Command {
                 _ => Err(CommandError::WrongArity("set")),
             },
             b"DEL" => match args.len() {
-                nb if nb >= 2 => Ok(Command::Del {
+                2.. => Ok(Command::Del {
                     keys: args[1..].to_vec(),
                 }),
                 _ => Err(CommandError::WrongArity("del")),
@@ -191,59 +116,194 @@ impl Command {
                 1 => Ok(Command::Dbsize {}),
                 _ => Err(CommandError::WrongArity("dbsize")),
             },
+            b"LPUSH" => match args.len() {
+                3.. => Ok(Command::Lpush {
+                    key: args[1].clone(),
+                    values: args[2..].to_vec(),
+                }),
+                _ => Err(CommandError::WrongArity("lpush")),
+            },
+            b"RPUSH" => match args.len() {
+                3.. => Ok(Command::Rpush {
+                    key: args[1].clone(),
+                    values: args[2..].to_vec(),
+                }),
+                _ => Err(CommandError::WrongArity("rpush")),
+            },
+            b"LPOP" => match args.len() {
+                2 => Ok(Command::Lpop {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("lpop")),
+            },
+            b"RPOP" => match args.len() {
+                2 => Ok(Command::Rpop {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("rpop")),
+            },
+            b"LLEN" => match args.len() {
+                2 => Ok(Command::Llen {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("llen")),
+            },
+            b"LRANGE" => match args.len() {
+                4 => Ok(Command::Lrange {
+                    key: args[1].clone(),
+                    start: Self::parse_int(&args[2])?,
+                    stop: Self::parse_int(&args[3])?,
+                }),
+                _ => Err(CommandError::WrongArity("lrange")),
+            },
+            b"HSET" => match args.len() {
+                n if n >= 4 && n % 2 == 0 => Ok(Command::Hset {
+                    key: args[1].clone(),
+                    pairs: args[2..]
+                        .chunks_exact(2)
+                        .map(|p| (p[0].clone(), p[1].clone()))
+                        .collect(),
+                }),
+                _ => Err(CommandError::WrongArity("hset")),
+            },
+            b"HGET" => match args.len() {
+                3 => Ok(Command::Hget {
+                    key: args[1].clone(),
+                    field: args[2].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("hget")),
+            },
+            b"HDEL" => match args.len() {
+                3.. => Ok(Command::Hdel {
+                    key: args[1].clone(),
+                    fields: args[2..].to_vec(),
+                }),
+                _ => Err(CommandError::WrongArity("hdel")),
+            },
+            b"HLEN" => match args.len() {
+                2 => Ok(Command::Hlen {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("hlen")),
+            },
+            b"HEXISTS" => match args.len() {
+                3 => Ok(Command::Hexists {
+                    key: args[1].clone(),
+                    field: args[2].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("hexists")),
+            },
+            b"HGETALL" => match args.len() {
+                2 => Ok(Command::Hgetall {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("hgetall")),
+            },
+            b"TYPE" => match args.len() {
+                2 => Ok(Command::Type {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("type")),
+            },
             _ => Err(CommandError::unknown_command(args)),
         }
     }
 
-    pub fn execute(self, store: &Store) -> Vec<u8> {
+    pub fn execute(self, store: &Store) -> Reply {
         match self {
-            Command::Ping { message: None } => b"+PONG\r\n".to_vec(),
+            Command::Ping { message: None } => Reply::Simple("PONG"),
             Command::Ping {
                 message: Some(message),
-            } => {
-                let mut response = format!("${}\r\n", message.len()).into_bytes();
-                response.extend_from_slice(&message);
-                response.extend_from_slice(b"\r\n");
-                response
-            }
+            } => Reply::Bulk(message),
             Command::Get { key } => match store.get(&key) {
-                None => b"$-1\r\n".to_vec(),
-                Some(value) => {
-                    let mut response = format!("${}\r\n", value.len()).into_bytes();
-                    response.extend_from_slice(&value);
-                    response.extend_from_slice(b"\r\n");
-                    response
-                }
+                Ok(None) => Reply::Nil,
+                Ok(Some(value)) => Reply::Bulk(value),
+                Err(e) => CommandError::from(e).into(),
             },
             Command::Set { key, value, ttl } => {
                 store.set(key, value, ttl);
-                b"+OK\r\n".to_vec()
+                Reply::Simple("OK")
             }
             Command::Del { keys } => {
                 let removed = store.del(&keys);
-                format!(":{removed}\r\n").into_bytes()
+                Reply::Integer(removed as i64)
             }
             Command::Ttl { key } => match store.ttl(&key) {
-                TtlStatus::NoKey => b":-2\r\n".to_vec(),
-                TtlStatus::NoExpiry => b":-1\r\n".to_vec(),
-                TtlStatus::Remaining(d) => {
-                    format!(":{}\r\n", (d.as_millis() + 500) / 1000).into_bytes()
-                }
+                TtlStatus::NoKey => Reply::Integer(-2),
+                TtlStatus::NoExpiry => Reply::Integer(-1),
+                TtlStatus::Remaining(d) => Reply::Integer(((d.as_millis() + 500) / 1000) as i64),
             },
             Command::Pttl { key } => match store.ttl(&key) {
-                TtlStatus::NoKey => b":-2\r\n".to_vec(),
-                TtlStatus::NoExpiry => b":-1\r\n".to_vec(),
-                TtlStatus::Remaining(d) => format!(":{}\r\n", d.as_millis()).into_bytes(),
+                TtlStatus::NoKey => Reply::Integer(-2),
+                TtlStatus::NoExpiry => Reply::Integer(-1),
+                TtlStatus::Remaining(d) => Reply::Integer(d.as_millis() as i64),
             },
             Command::Expire { key, ttl } => {
                 let result = store.expire(&key, ttl);
-                format!(":{result}\r\n").into_bytes()
+                Reply::Integer(result.into())
             }
             Command::Persist { key } => {
                 let result = store.persist(&key);
-                format!(":{result}\r\n").into_bytes()
+                Reply::Integer(result.into())
             }
-            Command::Dbsize {} => format!(":{}\r\n", store.dbsize()).into_bytes(),
+            Command::Dbsize {} => Reply::Integer(store.dbsize() as i64),
+            Command::Lpush { key, values } => match store.lpush(key, values) {
+                Ok(len) => Reply::Integer(len as i64),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Rpush { key, values } => match store.rpush(key, values) {
+                Ok(len) => Reply::Integer(len as i64),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Lpop { key } => match store.lpop(&key) {
+                Ok(None) => Reply::Nil,
+                Ok(Some(v)) => Reply::Bulk(v),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Rpop { key } => match store.rpop(&key) {
+                Ok(None) => Reply::Nil,
+                Ok(Some(v)) => Reply::Bulk(v),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Llen { key } => match store.llen(&key) {
+                Ok(len) => Reply::Integer(len as i64),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Lrange { key, start, stop } => match store.lrange(&key, start, stop) {
+                Ok(items) => Reply::Array(items.into_iter().map(Reply::Bulk).collect()),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Hset { key, pairs } => match store.hset(key, pairs) {
+                Ok(added) => Reply::Integer(added as i64),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Hget { key, field } => match store.hget(&key, &field) {
+                Ok(None) => Reply::Nil,
+                Ok(Some(v)) => Reply::Bulk(v),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Hdel { key, fields } => match store.hdel(&key, &fields) {
+                Ok(removed) => Reply::Integer(removed as i64),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Hlen { key } => match store.hlen(&key) {
+                Ok(len) => Reply::Integer(len as i64),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Hexists { key, field } => match store.hexists(&key, &field) {
+                Ok(exists) => Reply::Integer(exists.into()),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Hgetall { key } => match store.hgetall(&key) {
+                Ok(pairs) => Reply::Array(
+                    pairs
+                        .into_iter()
+                        .flat_map(|(f, v)| [Reply::Bulk(f), Reply::Bulk(v)])
+                        .collect(),
+                ),
+                Err(e) => CommandError::from(e).into(),
+            },
+            Command::Type { key } => Reply::Simple(store.key_type(&key)),
         }
     }
 }

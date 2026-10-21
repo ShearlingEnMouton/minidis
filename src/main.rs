@@ -7,7 +7,7 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 
-use crate::command::Command;
+use crate::command::{Command, Reply};
 use crate::store::Store;
 mod command;
 mod limits;
@@ -89,12 +89,18 @@ async fn handle_client(mut stream: TcpStream, store: &Store) -> tokio::io::Resul
                     if args.is_empty() {
                         continue;
                     }
+                    let mut out = Vec::new();
+
                     match Command::from_args(&args) {
                         Ok(cmd) => {
                             let response = cmd.execute(store);
-                            stream.write_all(&response).await?;
+                            response.encode(&mut out);
+                            stream.write_all(&out).await?;
                         }
-                        Err(e) => stream.write_all(&e.to_resp()).await?,
+                        Err(e) => {
+                            Reply::from(e).encode(&mut out);
+                            stream.write_all(&out).await?
+                        }
                     }
                 }
                 Ok(None) => break,
