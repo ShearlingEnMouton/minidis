@@ -74,4 +74,7 @@ pub enum Command {
     Hgetall {
         key: Vec<u8>,
     },
+    Type {
+        key: Vec<u8>,
+    },
 }
