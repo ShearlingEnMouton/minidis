@@ -1,13 +1,13 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, ErrorKind, Write},
     path::Path,
     sync::{Arc, Mutex},
 };
 
 use crate::{
     command::{Command, Reply},
-    log_err,
+    log_err, log_warn, resp,
     store::Store,
 };
 
@@ -47,5 +47,46 @@ impl Aof {
             }
         }
         reply
+    }
+
+    pub fn replay(path: &str, store: &Store) -> io::Result<usize> {
+        let data = fs::read(path)?;
+        let mut offset = 0;
+        let mut count = 0;
+        while offset < data.len() {
+            match resp::parse_command(&data[offset..]) {
+                Ok(Some((args, consumed))) => {
+                    if !args.is_empty() {
+                        let cmd = Command::from_args(&args).map_err(|_| {
+                            io::Error::new(
+                                ErrorKind::InvalidData,
+                                format!("invalid command in AOF at byte {}", offset),
+                            )
+                        })?;
+                        cmd.execute(store);
+                        count += 1;
+                    }
+                    offset += consumed;
+                }
+                Ok(None) => {
+                    log_warn!(
+                        "AOF has an incomplete record at byte {}, truncating",
+                        offset
+                    );
+                    OpenOptions::new()
+                        .write(true)
+                        .open(path)?
+                        .set_len(offset as u64)?;
+                    break;
+                }
+                Err(e) => {
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!("corrupted AOF at byte {}: {:?}", offset, e),
+                    ));
+                }
+            }
+        }
+        Ok(count)
     }
 }

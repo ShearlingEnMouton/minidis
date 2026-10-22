@@ -22,7 +22,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("EXPOSE_PORT").unwrap_or_else(|_| "3131".to_string());
     let addr = format!("{}:{}", bind_addr, port);
-    // replay
     let listener = TcpListener::bind(addr.clone()).await?;
     log_info!("Listening on: {}", addr);
 
@@ -49,6 +48,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::new();
     let aof = Aof::open(&aof_path)?;
     log_info!("AOF file: {}", aof_path);
+    let replayed = Aof::replay(&aof_path, &store)?;
+    log_info!("AOF replayed: {} commands", replayed);
 
     let reaper_store = store.clone();
     task::spawn(async move {
