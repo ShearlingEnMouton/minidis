@@ -45,6 +45,8 @@ pub enum TtlStatus {
     Remaining(Duration),
 }
 
+pub type HgetallResult = Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError>;
+
 impl Store {
     pub fn new() -> Store {
         Self {
@@ -317,7 +319,7 @@ impl Store {
             },
         }
     }
-    pub fn hgetall(&self, key: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+    pub fn hgetall(&self, key: &[u8]) -> HgetallResult {
         let mut g = self.inner.lock().unwrap();
         g.purge_if_expired(key);
 
