@@ -10,3 +10,4 @@ data:
   LOG_LEVEL: {{ .Values.logLevel | quote }}
   PURGE_LIMIT: {{ .Values.purge.limit | quote }}
   PURGE_INTERVAL: {{ .Values.purge.interval | quote }}
+  AOF_PATH: {{ .Values.aof.path | quote }}

@@ -23,6 +23,9 @@ purge:
   limit: 1000
   interval: 100
 
+aof:
+  path: ./data/appendonly.aof
+
 readinessProbe:
   initialDelaySeconds: 5
   periodSeconds: 10

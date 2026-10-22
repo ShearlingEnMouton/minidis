@@ -306,4 +306,20 @@ impl Command {
             Command::Type { key } => Reply::Simple(store.key_type(&key)),
         }
     }
+
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Command::Set { .. }
+                | Command::Del { .. }
+                | Command::Expire { .. }
+                | Command::Persist { .. }
+                | Command::Lpush { .. }
+                | Command::Rpush { .. }
+                | Command::Lpop { .. }
+                | Command::Rpop { .. }
+                | Command::Hset { .. }
+                | Command::Hdel { .. }
+        )
+    }
 }

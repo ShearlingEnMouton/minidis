@@ -7,8 +7,10 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 
+use crate::aof::Aof;
 use crate::command::{Command, Reply};
 use crate::store::Store;
+mod aof;
 mod command;
 mod limits;
 mod logger;
@@ -20,6 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("EXPOSE_PORT").unwrap_or_else(|_| "3131".to_string());
     let addr = format!("{}:{}", bind_addr, port);
+    // replay
     let listener = TcpListener::bind(addr.clone()).await?;
     log_info!("Listening on: {}", addr);
 
@@ -40,7 +43,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("purge_limit and purge_int should be a positive value".into());
     }
 
+    let aof_path =
+        std::env::var("AOF_PATH").unwrap_or_else(|_| "/var/minidis/aof/appendonly.aof".to_string());
+
     let store = Store::new();
+    let aof = Aof::open(&aof_path)?;
+    log_info!("AOF file: {}", aof_path);
 
     let reaper_store = store.clone();
     task::spawn(async move {
@@ -63,15 +71,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log_info!("New client connected: {}", peer_addr);
 
         let store = store.clone();
+        let aof = aof.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(socket, &store).await {
+            if let Err(e) = handle_client(socket, &store, &aof).await {
                 log_err!("Error handling client {}: {:?}", peer_addr, e);
             }
         });
     }
 }
 
-async fn handle_client(mut stream: TcpStream, store: &Store) -> tokio::io::Result<()> {
+async fn handle_client(mut stream: TcpStream, store: &Store, aof: &Aof) -> tokio::io::Result<()> {
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
 
     loop {
@@ -93,8 +102,11 @@ async fn handle_client(mut stream: TcpStream, store: &Store) -> tokio::io::Resul
 
                     match Command::from_args(&args) {
                         Ok(cmd) => {
-                            let response = cmd.execute(store);
-                            response.encode(&mut out);
+                            if cmd.is_write() {
+                                aof.run_write(cmd, &args, store).encode(&mut out);
+                            } else {
+                                cmd.execute(store).encode(&mut out);
+                            }
                             stream.write_all(&out).await?;
                         }
                         Err(e) => {
