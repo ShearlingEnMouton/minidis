@@ -28,7 +28,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/minidis
-          tags: type=semver,pattern=v{{version}}
+          tags: type=semver,pattern={{version}}
 
       - uses: docker/build-push-action@v6
         with:
@@ -63,3 +63,17 @@ jobs:
         run: |
           helm package helm/minidis --destination dist
           helm push dist/*.tgz "oci://ghcr.io/${OWNER}"
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [image, chart]
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FLAGS=""
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then FLAGS="--prerelease"; fi
+          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --generate-notes ${FLAGS}
