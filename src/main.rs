@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -62,26 +62,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        log_info!("New client connected: {}", peer_addr);
-
         let store = store.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(socket, &store).await {
+            if let Err(e) = handle_client(socket, peer_addr, &store).await {
                 log_err!("Error handling client {}: {:?}", peer_addr, e);
             }
         });
     }
 }
 
-async fn handle_client(mut stream: TcpStream, store: &Store) -> tokio::io::Result<()> {
+async fn handle_client(
+    mut stream: TcpStream,
+    peer_addr: SocketAddr,
+    store: &Store,
+) -> tokio::io::Result<()> {
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
+    let mut seen_data = false;
 
     loop {
         let bytes_read = stream.read_buf(&mut buffer).await?;
 
         if bytes_read == 0 {
-            log_info!("Client disconnected.");
+            if seen_data {
+                log_info!("Client disconnected: {}", peer_addr);
+            } else {
+                log_debug!("Connection closed without data: {}", peer_addr);
+            }
             return Ok(());
+        }
+
+        if !seen_data {
+            seen_data = true;
+            log_info!("New client connected: {}", peer_addr);
         }
 
         loop {
