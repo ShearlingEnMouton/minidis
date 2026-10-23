@@ -49,7 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         loop {
             let purged = reaper_store.purge_expired(purge_limit);
-            log_debug!("{purged} expired data have been purged.");
+            if purged > 0 {
+                log_debug!("{purged} expired data have been purged.");
+            }
             if purged == purge_limit {
                 task::yield_now().await;
                 continue;
