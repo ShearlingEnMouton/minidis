@@ -16,14 +16,14 @@ spec:
       annotations:
         kubectl.kubernetes.io/default-logs-container: {{ include "minidisservice.name" . }}
     spec:
-      {{- with .Values.imagePullSecrets }}
+{{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.podSecurityContext }}
+{{- end }}
+{{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+{{- end }}
       containers:
       - name: {{ include "minidisservice.name" . }}
         image: {{ .Values.image.repository }}:{{ .Values.image.tag | default (printf "%s" .Chart.AppVersion) }}
@@ -38,27 +38,27 @@ spec:
             port: {{ .Values.port }}
           initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
           periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
-        {{- with .Values.securityContext }}
+{{- with .Values.securityContext }}
         securityContext:
           {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with .Values.lifecycle }}
+{{- end }}
+{{- with .Values.lifecycle }}
         lifecycle:
           {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with .Values.resources }}
+{{- end }}
+{{- with .Values.resources }}
         resources:
           {{- toYaml . | nindent 10 }}
-        {{- end }}
-      {{- with .Values.nodeSelector }}
+{{- end }}
+{{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
+{{- end }}
+{{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.affinity }}
+{{- end }}
+{{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+{{- end }}
