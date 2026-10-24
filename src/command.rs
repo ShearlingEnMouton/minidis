@@ -5,7 +5,7 @@ mod types;
 use crate::store::{Store, TtlStatus};
 use error::CommandError;
 pub use reply::Reply;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub use types::Command;
 
 impl Command {
@@ -26,6 +26,37 @@ impl Command {
             });
         }
         let ttl = unit(n as u64);
+        if Instant::now().checked_add(ttl).is_none() {
+            return Err(CommandError::InvalidExpire(name));
+        }
+        Ok(Command::Expire {
+            key: key.to_vec(),
+            ttl,
+        })
+    }
+    fn calculate_remaining(expire_at: u64, unit: fn(u64) -> Duration) -> Duration {
+        (UNIX_EPOCH + unit(expire_at))
+            .duration_since(SystemTime::now())
+            .unwrap_or_default()
+    }
+    fn expire_at_command(
+        key: &[u8],
+        arg: &[u8],
+        unit: fn(u64) -> Duration,
+        name: &'static str,
+    ) -> Result<Command, CommandError> {
+        let n = Self::parse_int(arg)?;
+        if n <= 0 {
+            return Ok(Command::Del {
+                keys: vec![key.to_vec()],
+            });
+        }
+        let ttl = Self::calculate_remaining(n as u64, unit);
+        if ttl.is_zero() {
+            return Ok(Command::Del {
+                keys: vec![key.to_vec()],
+            });
+        }
         if Instant::now().checked_add(ttl).is_none() {
             return Err(CommandError::InvalidExpire(name));
         }
@@ -66,6 +97,8 @@ impl Command {
                     let ttl = match args[3].to_ascii_uppercase().as_slice() {
                         b"EX" => Duration::from_secs(parsed as u64),
                         b"PX" => Duration::from_millis(parsed as u64),
+                        b"EXAT" => Self::calculate_remaining(parsed as u64, Duration::from_secs),
+                        b"PXAT" => Self::calculate_remaining(parsed as u64, Duration::from_millis),
                         _ => return Err(CommandError::SyntaxError),
                     };
                     if Instant::now().checked_add(ttl).is_none() {
@@ -105,6 +138,12 @@ impl Command {
             b"PEXPIRE" => match args.len() {
                 3 => Self::expire_command(&args[1], &args[2], Duration::from_millis, "pexpire"),
                 _ => Err(CommandError::WrongArity("pexpire")),
+            },
+            b"PEXPIREAT" => match args.len() {
+                3 => {
+                    Self::expire_at_command(&args[1], &args[2], Duration::from_millis, "pexpireat")
+                }
+                _ => Err(CommandError::WrongArity("pexpireat")),
             },
             b"PERSIST" => match args.len() {
                 2 => Ok(Command::Persist {

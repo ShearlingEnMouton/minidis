@@ -3,6 +3,7 @@ use std::{
     io::{self, ErrorKind, Write},
     path::Path,
     sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -33,15 +34,46 @@ impl Aof {
         file.write_all(&buf)
     }
 
+    fn convert_args(cmd: &Command, args: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let expire_at_ms = |ttl: &Duration| {
+            (now_ms + ttl.as_millis())
+                .min(i64::MAX as u128)
+                .to_string()
+                .into_bytes()
+        };
+        match cmd {
+            Command::Set {
+                key,
+                value,
+                ttl: Some(ttl),
+            } => vec![
+                b"SET".to_vec(),
+                key.clone(),
+                value.clone(),
+                b"PXAT".to_vec(),
+                expire_at_ms(ttl),
+            ],
+            Command::Expire { key, ttl } => {
+                vec![b"PEXPIREAT".to_vec(), key.clone(), expire_at_ms(ttl)]
+            }
+            _ => args.to_vec(),
+        }
+    }
+
     pub fn run_write(&self, cmd: Command, args: &[Vec<u8>], store: &Store) -> Reply {
         let mut file = self.file.lock().unwrap();
+        let aof_args = Self::convert_args(&cmd, args);
         let reply = cmd.execute(store);
         match &reply {
             Reply::Error(e) => {
                 log_err!("Execution fail: {}", e);
             }
             _ => {
-                if let Err(e) = Self::append(&mut file, args) {
+                if let Err(e) = Self::append(&mut file, &aof_args) {
                     log_err!("AOF append failed: {}", e);
                 }
             }
