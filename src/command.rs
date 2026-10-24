@@ -160,7 +160,9 @@ impl Command {
                 n if n >= 4 && n % 2 == 0 => Ok(Command::Hset {
                     key: args[1].clone(),
                     pairs: args[2..]
-                        .as_chunks::<2>().0.iter()
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|p| (p[0].clone(), p[1].clone()))
                         .collect(),
                 }),
