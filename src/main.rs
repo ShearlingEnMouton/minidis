@@ -7,8 +7,10 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 
+use crate::aof::{Aof, FsyncPolicy};
 use crate::command::{Command, Reply};
 use crate::store::Store;
+mod aof;
 mod command;
 mod limits;
 mod logger;
@@ -40,7 +42,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("purge_limit and purge_int should be a positive value".into());
     }
 
+    let aof_path =
+        std::env::var("AOF_PATH").unwrap_or_else(|_| "/var/minidis/aof/appendonly.aof".to_string());
+
+    let fsync = std::env::var("AOF_FSYNC").unwrap_or_else(|_| "everysec".to_string());
+    let policy = match fsync.to_ascii_lowercase().as_str() {
+        "always" => FsyncPolicy::Always,
+        "everysec" => FsyncPolicy::EverySec,
+        "no" => FsyncPolicy::No,
+        _ => return Err("AOF_FSYNC must be always, everysec or no".into()),
+    };
+
     let store = Store::new();
+    let aof = Aof::open(&aof_path, policy)?;
+    log_info!("AOF file: {}", aof_path);
+    let replayed = Aof::replay(&aof_path, &store)?;
+    log_info!("AOF replayed: {} commands", replayed);
+
+    aof.start_fsync_task();
 
     let reaper_store = store.clone();
     task::spawn(async move {
@@ -63,8 +82,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let (socket, peer_addr) = listener.accept().await?;
         let store = store.clone();
+        let aof = aof.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(socket, peer_addr, &store).await {
+            if let Err(e) = handle_client(socket, peer_addr, &store, &aof).await {
                 log_err!("Error handling client {}: {:?}", peer_addr, e);
             }
         });
@@ -75,6 +95,7 @@ async fn handle_client(
     mut stream: TcpStream,
     peer_addr: SocketAddr,
     store: &Store,
+    aof: &Aof,
 ) -> tokio::io::Result<()> {
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut seen_data = false;
@@ -107,8 +128,23 @@ async fn handle_client(
 
                     match Command::from_args(&args) {
                         Ok(cmd) => {
-                            let response = cmd.execute(store);
-                            response.encode(&mut out);
+                            if matches!(cmd, Command::Rewriteaof) {
+                                match aof.rewrite(store) {
+                                    Ok(()) => {
+                                        log_info!("AOF rewritten");
+                                        Reply::Simple("OK").encode(&mut out);
+                                    }
+                                    Err(e) => {
+                                        log_err!("AOF rewrite failed: {}", e);
+                                        Reply::Error(format!("ERR AOF rewrite failed: {e}"))
+                                            .encode(&mut out);
+                                    }
+                                }
+                            } else if cmd.is_write() {
+                                aof.run_write(cmd, &args, store).encode(&mut out);
+                            } else {
+                                cmd.execute(store).encode(&mut out);
+                            }
                             stream.write_all(&out).await?;
                         }
                         Err(e) => {
