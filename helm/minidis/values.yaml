@@ -24,7 +24,7 @@ purge:
   interval: 100
 
 aof:
-  path: ./data/appendonly.aof
+  path: /data/appendonly.aof
   # enum: always | everysec | no
   fsync: everysec
 
@@ -32,10 +32,13 @@ readinessProbe:
   initialDelaySeconds: 5
   periodSeconds: 10
 
-podSecurityContext: {}
+podSecurityContext:
+  fsGroup: 1000
   # fsGroup: 2000
 
-securityContext: {}
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
   # capabilities:
   #   drop:
   #   - ALL
@@ -46,6 +49,9 @@ securityContext: {}
 service:
   type: ClusterIP
   port: 3131
+
+pvc:
+  storage: 2Gi
 
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious

@@ -9,6 +9,8 @@ spec:
   selector:
     matchLabels:
 {{ include "minidisservice.matchLabels" . | indent 6 }}
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -38,6 +40,9 @@ spec:
             port: {{ .Values.port }}
           initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
           periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+        volumeMounts:
+          - name: storage-volume
+            mountPath: /data
 {{- with .Values.securityContext }}
         securityContext:
           {{- toYaml . | nindent 10 }}
@@ -62,3 +67,7 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
 {{- end }}
+      volumes:
+        - name: storage-volume
+          persistentVolumeClaim:
+            claimName: "{{ include "minidisservice.name" . }}-pvc"
