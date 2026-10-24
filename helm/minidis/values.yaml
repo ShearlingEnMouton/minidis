@@ -25,6 +25,8 @@ purge:
 
 aof:
   path: ./data/appendonly.aof
+  # enum: always | everysec | no
+  fsync: everysec
 
 readinessProbe:
   initialDelaySeconds: 5

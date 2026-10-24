@@ -11,3 +11,4 @@ data:
   PURGE_LIMIT: {{ .Values.purge.limit | quote }}
   PURGE_INTERVAL: {{ .Values.purge.interval | quote }}
   AOF_PATH: {{ .Values.aof.path | quote }}
+  AOF_FSYNC: {{ .Values.aof.fsync | quote }}

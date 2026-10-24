@@ -2,7 +2,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, ErrorKind, Write},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -15,16 +18,27 @@ use crate::{
 #[derive(Clone)]
 pub struct Aof {
     file: Arc<Mutex<File>>,
+    policy: FsyncPolicy,
+    dirty: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum FsyncPolicy {
+    Always,
+    EverySec,
+    No,
 }
 
 impl Aof {
-    pub fn open(path: &str) -> io::Result<Aof> {
+    pub fn open(path: &str, policy: FsyncPolicy) -> io::Result<Aof> {
         if let Some(dir) = Path::new(path).parent() {
             fs::create_dir_all(dir)?;
         }
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Aof {
             file: Arc::new(Mutex::new(file)),
+            policy,
+            dirty: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -65,6 +79,7 @@ impl Aof {
     }
 
     pub fn run_write(&self, cmd: Command, args: &[Vec<u8>], store: &Store) -> Reply {
+        let policy = self.policy;
         let mut file = self.file.lock().unwrap();
         let aof_args = Self::convert_args(&cmd, args);
         let reply = cmd.execute(store);
@@ -75,6 +90,16 @@ impl Aof {
             _ => {
                 if let Err(e) = Self::append(&mut file, &aof_args) {
                     log_err!("AOF append failed: {}", e);
+                } else {
+                    match policy {
+                        FsyncPolicy::Always => {
+                            if let Err(e) = file.sync_data() {
+                                log_err!("Sync data failed: {}", e);
+                            }
+                        }
+                        FsyncPolicy::EverySec => self.dirty.store(true, Ordering::Relaxed),
+                        FsyncPolicy::No => {}
+                    }
                 }
             }
         }
@@ -120,5 +145,23 @@ impl Aof {
             }
         }
         Ok(count)
+    }
+
+    pub fn start_fsync_task(&self) {
+        if self.policy != FsyncPolicy::EverySec {
+            return;
+        }
+        let aof_file = self.file.clone();
+        let is_dirty = self.dirty.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                if is_dirty.swap(false, Ordering::Relaxed) {
+                    if let Err(e) = aof_file.lock().unwrap().sync_data() {
+                        log_err!("AOF fsync failed: {}", e);
+                    }
+                }
+            }
+        });
     }
 }

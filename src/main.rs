@@ -7,7 +7,7 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 
-use crate::aof::Aof;
+use crate::aof::{Aof, FsyncPolicy};
 use crate::command::{Command, Reply};
 use crate::store::Store;
 mod aof;
@@ -45,11 +45,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let aof_path =
         std::env::var("AOF_PATH").unwrap_or_else(|_| "/var/minidis/aof/appendonly.aof".to_string());
 
+    let fsync = std::env::var("AOF_FSYNC").unwrap_or_else(|_| "everysec".to_string());
+    let policy = match fsync.to_ascii_lowercase().as_str() {
+        "always" => FsyncPolicy::Always,
+        "everysec" => FsyncPolicy::EverySec,
+        "no" => FsyncPolicy::No,
+        _ => return Err("AOF_FSYNC must be always, everysec or no".into()),
+    };
+
     let store = Store::new();
-    let aof = Aof::open(&aof_path)?;
+    let aof = Aof::open(&aof_path, policy)?;
     log_info!("AOF file: {}", aof_path);
     let replayed = Aof::replay(&aof_path, &store)?;
     log_info!("AOF replayed: {} commands", replayed);
+
+    aof.start_fsync_task();
 
     let reaper_store = store.clone();
     task::spawn(async move {
