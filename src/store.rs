@@ -45,6 +45,18 @@ pub enum TtlStatus {
     Remaining(Duration),
 }
 
+pub enum SnapshotValue {
+    Value(Vec<u8>),
+    List(Vec<Vec<u8>>),
+    Hash(Vec<(Vec<u8>, Vec<u8>)>),
+}
+
+pub struct SnapshotEntry {
+    pub key: Vec<u8>,
+    pub value: SnapshotValue,
+    pub ttl: Option<Duration>,
+}
+
 pub type HgetallResult = Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError>;
 
 impl Store {
@@ -332,6 +344,26 @@ impl Store {
                 _ => Err(StoreError::WrongType),
             },
         }
+    }
+
+    pub fn snapshot(&self) -> Vec<SnapshotEntry> {
+        let g = self.inner.lock().unwrap();
+        let now = Instant::now();
+        g.data
+            .iter()
+            .filter(|(_, e)| !e.is_expired())
+            .map(|(key, e)| SnapshotEntry {
+                key: key.clone(),
+                value: match &e.value {
+                    EntryType::Value(v) => SnapshotValue::Value(v.clone()),
+                    EntryType::List(l) => SnapshotValue::List(l.iter().cloned().collect()),
+                    EntryType::Hash(h) => {
+                        SnapshotValue::Hash(h.iter().map(|(f, v)| (f.clone(), v.clone())).collect())
+                    }
+                },
+                ttl: e.expires_at.map(|t| t.saturating_duration_since(now)),
+            })
+            .collect()
     }
 
     pub fn key_type(&self, key: &[u8]) -> &'static str {

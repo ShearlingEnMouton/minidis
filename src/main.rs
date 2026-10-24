@@ -128,7 +128,19 @@ async fn handle_client(
 
                     match Command::from_args(&args) {
                         Ok(cmd) => {
-                            if cmd.is_write() {
+                            if matches!(cmd, Command::Rewriteaof) {
+                                match aof.rewrite(store) {
+                                    Ok(()) => {
+                                        log_info!("AOF rewritten");
+                                        Reply::Simple("OK").encode(&mut out);
+                                    }
+                                    Err(e) => {
+                                        log_err!("AOF rewrite failed: {}", e);
+                                        Reply::Error(format!("ERR AOF rewrite failed: {e}"))
+                                            .encode(&mut out);
+                                    }
+                                }
+                            } else if cmd.is_write() {
                                 aof.run_write(cmd, &args, store).encode(&mut out);
                             } else {
                                 cmd.execute(store).encode(&mut out);

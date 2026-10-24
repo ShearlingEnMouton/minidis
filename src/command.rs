@@ -151,6 +151,10 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("persist")),
             },
+            b"REWRITEAOF" => match args.len() {
+                1 => Ok(Command::Rewriteaof),
+                _ => Err(CommandError::WrongArity("rewriteaof")),
+            },
             b"DBSIZE" => match args.len() {
                 1 => Ok(Command::Dbsize {}),
                 _ => Err(CommandError::WrongArity("dbsize")),
@@ -288,6 +292,7 @@ impl Command {
                 Reply::Integer(result.into())
             }
             Command::Dbsize {} => Reply::Integer(store.dbsize() as i64),
+            Command::Rewriteaof => Reply::Error("ERR REWRITEAOF is handled by the AOF".to_string()),
             Command::Lpush { key, values } => match store.lpush(key, values) {
                 Ok(len) => Reply::Integer(len as i64),
                 Err(e) => CommandError::from(e).into(),

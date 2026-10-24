@@ -30,6 +30,7 @@ pub enum Command {
         key: Vec<u8>,
     },
     Dbsize {},
+    Rewriteaof,
     Lpush {
         key: Vec<u8>,
         values: Vec<Vec<u8>>,

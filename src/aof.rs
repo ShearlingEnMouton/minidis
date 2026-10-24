@@ -12,12 +12,13 @@ use std::{
 use crate::{
     command::{Command, Reply},
     log_err, log_warn, resp,
-    store::Store,
+    store::{SnapshotValue, Store},
 };
 
 #[derive(Clone)]
 pub struct Aof {
     file: Arc<Mutex<File>>,
+    path: String,
     policy: FsyncPolicy,
     dirty: Arc<AtomicBool>,
 }
@@ -37,6 +38,7 @@ impl Aof {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Aof {
             file: Arc::new(Mutex::new(file)),
+            path: path.to_string(),
             policy,
             dirty: Arc::new(AtomicBool::new(false)),
         })
@@ -106,6 +108,75 @@ impl Aof {
         reply
     }
 
+    pub fn rewrite(&self, store: &Store) -> io::Result<()> {
+        let mut file = self.file.lock().unwrap();
+        let entries = store.snapshot();
+        let tmp_path = format!("{}.tmp", self.path);
+        match fs::remove_file(&tmp_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let mut tmp = OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(&tmp_path)?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+
+        let result = (|| -> io::Result<()> {
+            for entry in &entries {
+                let key = entry.key.clone();
+                let expire_at = entry.ttl.as_ref().map(|ttl| {
+                    (now_ms + ttl.as_millis())
+                        .min(i64::MAX as u128)
+                        .to_string()
+                        .into_bytes()
+                });
+                match &entry.value {
+                    SnapshotValue::Value(v) => {
+                        let mut args = vec![b"SET".to_vec(), key, v.clone()];
+                        if let Some(ms) = expire_at {
+                            args.push(b"PXAT".to_vec());
+                            args.push(ms);
+                        }
+                        Self::append(&mut tmp, &args)?;
+                    }
+                    SnapshotValue::List(items) => {
+                        let mut args = vec![b"RPUSH".to_vec(), key.clone()];
+                        args.extend(items.iter().cloned());
+                        Self::append(&mut tmp, &args)?;
+                        if let Some(ms) = expire_at {
+                            Self::append(&mut tmp, &[b"PEXPIREAT".to_vec(), key, ms])?;
+                        }
+                    }
+                    SnapshotValue::Hash(pairs) => {
+                        let mut args = vec![b"HSET".to_vec(), key.clone()];
+                        for (f, v) in pairs {
+                            args.push(f.clone());
+                            args.push(v.clone());
+                        }
+                        Self::append(&mut tmp, &args)?;
+                        if let Some(ms) = expire_at {
+                            Self::append(&mut tmp, &[b"PEXPIREAT".to_vec(), key, ms])?;
+                        }
+                    }
+                }
+            }
+            tmp.sync_all()?;
+            fs::rename(&tmp_path, &self.path)
+        })();
+
+        if let Err(e) = result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+        *file = tmp;
+        Ok(())
+    }
+
     pub fn replay(path: &str, store: &Store) -> io::Result<usize> {
         let data = fs::read(path)?;
         let mut offset = 0;
@@ -156,10 +227,10 @@ impl Aof {
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_secs(1));
-                if is_dirty.swap(false, Ordering::Relaxed) {
-                    if let Err(e) = aof_file.lock().unwrap().sync_data() {
-                        log_err!("AOF fsync failed: {}", e);
-                    }
+                if is_dirty.swap(false, Ordering::Relaxed)
+                    && let Err(e) = aof_file.lock().unwrap().sync_data()
+                {
+                    log_err!("AOF fsync failed: {}", e);
                 }
             }
         });
