@@ -8,8 +8,9 @@ data:
   EXPOSE_PORT: {{ .Values.port | quote }}
   BIND_ADDR: {{ .Values.bindAddress | quote }}
   LOG_LEVEL: {{ .Values.logLevel | quote }}
-  PURGE_LIMIT: {{ .Values.purge.limit | quote }}
-  PURGE_INTERVAL: {{ .Values.purge.interval | quote }}
   AOF_PATH: {{ .Values.aof.path | quote }}
   AOF_FSYNC: {{ .Values.aof.fsync | quote }}
-  VARIANT: {{ .Values.variant | quote }}
+{{- if eq .Values.variant "full" }}
+  PURGE_LIMIT: {{ .Values.purge.limit | quote }}
+  PURGE_INTERVAL: {{ .Values.purge.interval | quote }}
+{{- end }}

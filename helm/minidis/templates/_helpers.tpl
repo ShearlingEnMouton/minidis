@@ -15,3 +15,12 @@ app: "{{ template "minidisservice.name" . }}"
 release: {{ .Release.Name }}
 app: "{{ template "minidisservice.name" . }}"
 {{- end -}}
+
+{{/* Image tag: image.tag if set, else appVersion, with a -lite suffix for the lite variant */}}
+{{- define "minidisservice.imageTag" -}}
+  {{- if not (has .Values.variant (list "full" "lite")) -}}
+    {{- fail (printf "variant must be full or lite, got %v" .Values.variant) -}}
+  {{- end -}}
+  {{- $suffix := ternary "-lite" "" (eq .Values.variant "lite") -}}
+{{- .Values.image.tag | default (printf "%s%s" .Chart.AppVersion $suffix) -}}
+{{- end -}}
