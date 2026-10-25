@@ -438,10 +438,12 @@ mod tests {
         Command::from_args(&args)
     }
 
+    #[cfg(feature = "full")]
     fn unix_now() -> Duration {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
     }
 
+    #[cfg(feature = "full")]
     fn set_ttl(parts: &[&str]) -> Option<Duration> {
         match parse(parts).unwrap() {
             Command::Set { ttl, .. } => ttl,
@@ -449,6 +451,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full")]
     fn expire_ttl(parts: &[&str]) -> Duration {
         match parse(parts).unwrap() {
             Command::Expire { ttl, .. } => ttl,
@@ -456,6 +459,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full")]
     fn is_del(parts: &[&str], key: &str) -> bool {
         match parse(parts).unwrap() {
             Command::Del { keys } => keys == vec![key.as_bytes().to_vec()],
@@ -463,11 +467,13 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn set_without_options_has_no_ttl() {
         assert_eq!(set_ttl(&["SET", "k", "v"]), None);
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn set_ex_and_px_use_the_given_duration() {
         assert_eq!(
@@ -480,6 +486,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn command_and_option_names_are_case_insensitive() {
         assert_eq!(
@@ -488,6 +495,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn set_exat_and_pxat_become_a_remaining_duration() {
         let at_secs = (unix_now().as_secs() + 100).to_string();
@@ -499,6 +507,7 @@ mod tests {
         assert!(ttl > Duration::from_secs(97) && ttl <= Duration::from_secs(100));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn set_rejects_invalid_options() {
         assert!(matches!(
@@ -527,6 +536,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn expire_and_pexpire_use_the_given_duration() {
         assert_eq!(expire_ttl(&["EXPIRE", "k", "10"]), Duration::from_secs(10));
@@ -536,6 +546,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn non_positive_expire_becomes_del() {
         assert!(is_del(&["EXPIRE", "k", "0"], "k"));
@@ -543,6 +554,7 @@ mod tests {
         assert!(is_del(&["PEXPIRE", "k", "0"], "k"));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn expire_rejects_a_duration_that_overflows() {
         assert!(matches!(
@@ -551,6 +563,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn pexpireat_in_the_future_becomes_a_remaining_duration() {
         let at_ms = (unix_now().as_millis() + 100_000).to_string();
@@ -558,6 +571,7 @@ mod tests {
         assert!(ttl > Duration::from_secs(97) && ttl <= Duration::from_secs(100));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn pexpireat_in_the_past_becomes_del() {
         assert!(is_del(&["PEXPIREAT", "k", "1000"], "k"));
@@ -565,6 +579,7 @@ mod tests {
         assert!(is_del(&["PEXPIREAT", "k", "-1"], "k"));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn rewriteaof_takes_no_arguments() {
         assert!(matches!(parse(&["REWRITEAOF"]), Ok(Command::Rewriteaof)));
@@ -574,6 +589,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn wrong_argument_counts_are_rejected() {
         for parts in [
@@ -603,6 +619,7 @@ mod tests {
         assert!(matches!(parse(&[]), Err(CommandError::WrongArity(_))));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn is_write_matches_the_commands_that_change_data() {
         for parts in [
@@ -630,6 +647,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn rewriteaof_is_not_executed_by_the_store() {
         let mut out = Vec::new();
@@ -638,6 +656,65 @@ mod tests {
             String::from_utf8(out).unwrap(),
             "-ERR REWRITEAOF is handled by the AOF\r\n"
         );
+    }
+
+    #[cfg(not(feature = "full"))]
+    #[test]
+    fn full_only_commands_are_unknown() {
+        for parts in [
+            &["TTL", "k"][..],
+            &["PTTL", "k"][..],
+            &["EXPIRE", "k", "10"][..],
+            &["PEXPIRE", "k", "10"][..],
+            &["PEXPIREAT", "k", "10"][..],
+            &["PERSIST", "k"][..],
+            &["LPUSH", "k", "x"][..],
+            &["RPUSH", "k", "x"][..],
+            &["LPOP", "k"][..],
+            &["RPOP", "k"][..],
+            &["LLEN", "k"][..],
+            &["LRANGE", "k", "0", "-1"][..],
+            &["HSET", "k", "f", "v"][..],
+            &["HGET", "k", "f"][..],
+            &["HDEL", "k", "f"][..],
+            &["HLEN", "k"][..],
+            &["HEXISTS", "k", "f"][..],
+            &["HGETALL", "k"][..],
+            &["TYPE", "k"][..],
+            &["DBSIZE"][..],
+            &["REWRITEAOF"][..],
+        ] {
+            assert!(
+                matches!(parse(parts), Err(CommandError::UnknownCommand { .. })),
+                "{parts:?}"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "full"))]
+    #[test]
+    fn set_accepts_no_options() {
+        assert!(matches!(parse(&["SET", "k", "v"]), Ok(Command::Set { .. })));
+        for parts in [
+            &["SET", "k", "v", "EX", "10"][..],
+            &["SET", "k", "v", "PX", "10"][..],
+            &["SET", "k", "v", "EX"][..],
+            &["SET", "k"][..],
+        ] {
+            assert!(
+                matches!(parse(parts), Err(CommandError::WrongArity("set"))),
+                "{parts:?}"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "full"))]
+    #[test]
+    fn only_set_and_del_are_writes() {
+        assert!(parse(&["SET", "k", "v"]).unwrap().is_write());
+        assert!(parse(&["DEL", "k"]).unwrap().is_write());
+        assert!(!parse(&["GET", "k"]).unwrap().is_write());
+        assert!(!parse(&["PING"]).unwrap().is_write());
     }
 }
 
@@ -656,6 +733,7 @@ mod execute_tests {
         String::from_utf8(out).unwrap()
     }
 
+    #[cfg(feature = "full")]
     const WRONGTYPE: &str =
         "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
 
@@ -681,9 +759,11 @@ mod execute_tests {
         run(&store, &["SET", "b", "2"]);
         assert_eq!(run(&store, &["DEL", "a", "b", "missing"]), ":2\r\n");
         assert_eq!(run(&store, &["DEL", "a"]), ":0\r\n");
+        #[cfg(feature = "full")]
         assert_eq!(run(&store, &["DBSIZE"]), ":0\r\n");
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn ttl_replies_for_missing_persistent_and_expiring_keys() {
         let store = Store::new();
@@ -701,6 +781,7 @@ mod execute_tests {
         assert!((99_000..=100_000).contains(&ms), "pttl was {ms}");
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn expire_and_persist_reply_one_when_they_change_something() {
         let store = Store::new();
@@ -714,6 +795,7 @@ mod execute_tests {
         assert_eq!(run(&store, &["TTL", "k"]), ":-1\r\n");
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn expire_with_a_non_positive_time_deletes_the_key() {
         let store = Store::new();
@@ -722,6 +804,7 @@ mod execute_tests {
         assert_eq!(run(&store, &["GET", "k"]), "$-1\r\n");
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn list_replies() {
         let store = Store::new();
@@ -734,6 +817,7 @@ mod execute_tests {
         assert_eq!(run(&store, &["RPOP", "l"]), "$1\r\nc\r\n");
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn lrange_handles_negative_and_out_of_range_indexes() {
         let store = Store::new();
@@ -751,6 +835,7 @@ mod execute_tests {
         assert_eq!(run(&store, &["LRANGE", "missing", "0", "-1"]), "*0\r\n");
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn lrange_rejects_non_integer_indexes() {
         let store = Store::new();
@@ -760,6 +845,7 @@ mod execute_tests {
         );
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn hash_replies() {
         let store = Store::new();
@@ -780,6 +866,7 @@ mod execute_tests {
         );
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn type_reply_names_each_kind() {
         let store = Store::new();
@@ -792,6 +879,7 @@ mod execute_tests {
         assert_eq!(run(&store, &["TYPE", "nope"]), "+none\r\n");
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn using_the_wrong_type_replies_wrongtype() {
         let store = Store::new();
@@ -811,6 +899,7 @@ mod execute_tests {
         }
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn error_replies_match_redis_wording() {
         let store = Store::new();
@@ -836,6 +925,7 @@ mod execute_tests {
         );
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn dbsize_counts_every_kind_of_key() {
         let store = Store::new();
@@ -843,5 +933,19 @@ mod execute_tests {
         run(&store, &["RPUSH", "l", "a"]);
         run(&store, &["HSET", "h", "f", "v"]);
         assert_eq!(run(&store, &["DBSIZE"]), ":3\r\n");
+    }
+
+    #[cfg(not(feature = "full"))]
+    #[test]
+    fn full_only_commands_reply_with_redis_errors() {
+        let store = Store::new();
+        assert_eq!(
+            run(&store, &["TTL", "k"]),
+            "-ERR unknown command 'TTL', with args beginning with: 'k' \r\n"
+        );
+        assert_eq!(
+            run(&store, &["SET", "k", "v", "EX", "10"]),
+            "-ERR wrong number of arguments for 'set' command\r\n"
+        );
     }
 }

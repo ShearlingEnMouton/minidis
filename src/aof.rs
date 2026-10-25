@@ -281,6 +281,7 @@ impl Aof {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "full")]
     use crate::store::TtlStatus;
     use std::sync::atomic::AtomicUsize;
 
@@ -320,6 +321,7 @@ mod tests {
         aof.run_write(cmd, &a, store)
     }
 
+    #[cfg(feature = "full")]
     fn now_ms() -> u128 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -327,6 +329,7 @@ mod tests {
             .as_millis()
     }
 
+    #[cfg(feature = "full")]
     fn dump(store: &Store) -> Vec<String> {
         let mut lines: Vec<String> = store
             .snapshot()
@@ -347,6 +350,7 @@ mod tests {
         lines
     }
 
+    #[cfg(feature = "full")]
     fn remaining(store: &Store, key: &str) -> Duration {
         match store.ttl(key.as_bytes()) {
             TtlStatus::Remaining(d) => d,
@@ -354,6 +358,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn rewrite_then_replay_restores_every_type() {
         let tmp = TempAof::new();
@@ -386,6 +391,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn rewrite_compacts_and_later_writes_go_to_the_new_file() {
         let tmp = TempAof::new();
@@ -408,6 +414,7 @@ mod tests {
         assert_eq!(dump(&restored), dump(&store));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn rewrite_leaves_an_empty_file_for_an_empty_store() {
         let tmp = TempAof::new();
@@ -422,6 +429,7 @@ mod tests {
         assert_eq!(Aof::replay(&tmp.path, &Store::new()).unwrap(), 0);
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn failed_write_is_not_logged() {
         let tmp = TempAof::new();
@@ -446,6 +454,7 @@ mod tests {
 
         assert_eq!(fs::metadata(&tmp.path).unwrap().len(), SET_A.len() as u64);
         assert_eq!(store.get(b"a").unwrap(), Some(b"1".to_vec()));
+        #[cfg(feature = "full")]
         assert_eq!(store.dbsize(), 1);
     }
 
@@ -470,6 +479,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::InvalidData);
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn replay_does_not_restore_a_key_whose_deadline_passed() {
         let tmp = TempAof::new();
@@ -485,6 +495,7 @@ mod tests {
         assert_eq!(store.dbsize(), 1);
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn replay_keeps_the_original_deadline() {
         let tmp = TempAof::new();
@@ -499,6 +510,7 @@ mod tests {
         assert!(left > Duration::from_secs(55) && left <= Duration::from_secs(60));
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn convert_args_turns_a_set_ttl_into_pxat() {
         let a = args(&["SET", "k", "v", "EX", "60"]);
@@ -514,6 +526,7 @@ mod tests {
         assert!(ms >= before + 60_000 && ms <= after + 60_000);
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn convert_args_turns_expire_into_pexpireat() {
         let a = args(&["EXPIRE", "k", "30"]);
@@ -529,6 +542,7 @@ mod tests {
         assert!(ms >= before + 30_000 && ms <= after + 30_000);
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn convert_args_leaves_other_commands_unchanged() {
         for parts in [
@@ -574,5 +588,56 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(1600));
         assert!(!aof.dirty.load(Ordering::Relaxed));
+    }
+
+    #[cfg(not(feature = "full"))]
+    #[test]
+    fn set_and_del_survive_a_replay() {
+        let tmp = TempAof::new();
+        let aof = Aof::open(&tmp.path, FsyncPolicy::No).unwrap();
+        let store = Store::new();
+        write(&aof, &store, &["SET", "a", "1"]);
+        write(&aof, &store, &["SET", "b", "2"]);
+        write(&aof, &store, &["DEL", "a"]);
+
+        let restored = Store::new();
+        assert_eq!(Aof::replay(&tmp.path, &restored).unwrap(), 3);
+        assert_eq!(restored.get(b"a").unwrap(), None);
+        assert_eq!(restored.get(b"b").unwrap(), Some(b"2".to_vec()));
+    }
+
+    #[cfg(not(feature = "full"))]
+    #[test]
+    fn convert_args_leaves_set_and_del_unchanged() {
+        for parts in [&["SET", "k", "v"][..], &["DEL", "a", "b"][..]] {
+            let a = args(parts);
+            let cmd = Command::from_args(&a).unwrap();
+            assert_eq!(Aof::convert_args(&cmd, &a), a);
+        }
+    }
+
+    #[cfg(not(feature = "full"))]
+    #[test]
+    fn replay_rejects_an_aof_from_the_full_build_and_keeps_the_file() {
+        for record in [
+            &["SET", "k", "v", "PXAT", "99999999999999"][..],
+            &["PEXPIREAT", "a", "99999999999999"][..],
+            &["RPUSH", "l", "x"][..],
+            &["HSET", "h", "f", "v"][..],
+        ] {
+            let tmp = TempAof::new();
+            let mut file = File::create(&tmp.path).unwrap();
+            Aof::append(&mut file, &args(&["SET", "a", "1"])).unwrap();
+            Aof::append(&mut file, &args(record)).unwrap();
+            let before = fs::read(&tmp.path).unwrap();
+
+            let err = Aof::replay(&tmp.path, &Store::new()).unwrap_err();
+
+            assert_eq!(err.kind(), ErrorKind::InvalidData, "{record:?}");
+            let message = err.to_string();
+            assert!(message.contains(&format!("'{}'", record[0])), "{message}");
+            assert!(message.contains("full build"), "{message}");
+            assert_eq!(fs::read(&tmp.path).unwrap(), before, "{record:?}");
+        }
     }
 }

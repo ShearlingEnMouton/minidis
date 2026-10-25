@@ -215,7 +215,7 @@ impl Inner {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "full"))]
 mod tests {
     use super::*;
 
@@ -420,5 +420,33 @@ mod tests {
         assert_eq!(store.lrange(&k("l"), 0, -1).unwrap(), vec![k("new")]);
         assert!(matches!(store.ttl(&k("l")), TtlStatus::NoExpiry));
         check_invariants(&store);
+    }
+}
+
+#[cfg(all(test, not(feature = "full")))]
+mod lite_tests {
+    use super::*;
+
+    fn k(s: &str) -> Vec<u8> {
+        s.as_bytes().to_vec()
+    }
+
+    #[test]
+    fn set_overwrites_and_get_reads_the_latest_value() {
+        let store = Store::new();
+        assert_eq!(store.get(&k("a")).unwrap(), None);
+        store.set(k("a"), k("1"));
+        store.set(k("a"), k("2"));
+        assert_eq!(store.get(&k("a")).unwrap(), Some(k("2")));
+    }
+
+    #[test]
+    fn del_counts_only_existing_keys() {
+        let store = Store::new();
+        store.set(k("a"), k("1"));
+        store.set(k("b"), k("2"));
+        assert_eq!(store.del(&[k("a"), k("b"), k("missing")]), 2);
+        assert_eq!(store.del(&[k("a")]), 0);
+        assert_eq!(store.get(&k("a")).unwrap(), None);
     }
 }
