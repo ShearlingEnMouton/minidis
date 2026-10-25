@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = format!("{}:{}", bind_addr, port);
     let listener = TcpListener::bind(addr.clone()).await?;
-    log_info!("Listening on: {}", addr);
+    log_info!("Listening on: {:#?}", listener.local_addr());
 
     let store = Store::new();
     let aof = Aof::open(&aof_path, policy)?;
