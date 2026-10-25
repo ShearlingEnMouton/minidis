@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let aof_path =
-        std::env::var("AOF_PATH").unwrap_or_else(|_| "/var/minidis/aof/appendonly.aof".to_string());
+        std::env::var("AOF_PATH").unwrap_or_else(|_| "/data/appendonly.aof".to_string());
 
     let fsync = std::env::var("AOF_FSYNC").unwrap_or_else(|_| "everysec".to_string());
     let policy = match fsync.to_ascii_lowercase().as_str() {
