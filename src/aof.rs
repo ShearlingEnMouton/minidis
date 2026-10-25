@@ -236,3 +236,302 @@ impl Aof {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::TtlStatus;
+    use std::sync::atomic::AtomicUsize;
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+    const SET_A: &[u8] = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n";
+
+    struct TempAof {
+        path: String,
+    }
+
+    impl TempAof {
+        fn new() -> TempAof {
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("minidis-aof-{}-{}.aof", std::process::id(), id))
+                .to_string_lossy()
+                .into_owned();
+            TempAof { path }
+        }
+    }
+
+    impl Drop for TempAof {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(format!("{}.tmp", self.path));
+        }
+    }
+
+    fn args(parts: &[&str]) -> Vec<Vec<u8>> {
+        parts.iter().map(|p| p.as_bytes().to_vec()).collect()
+    }
+
+    fn write(aof: &Aof, store: &Store, parts: &[&str]) -> Reply {
+        let a = args(parts);
+        let cmd = Command::from_args(&a).unwrap();
+        aof.run_write(cmd, &a, store)
+    }
+
+    fn now_ms() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    }
+
+    fn dump(store: &Store) -> Vec<String> {
+        let mut lines: Vec<String> = store
+            .snapshot()
+            .into_iter()
+            .map(|e| {
+                let value = match e.value {
+                    SnapshotValue::Value(v) => format!("string {:?}", v),
+                    SnapshotValue::List(items) => format!("list {:?}", items),
+                    SnapshotValue::Hash(mut pairs) => {
+                        pairs.sort();
+                        format!("hash {:?}", pairs)
+                    }
+                };
+                format!("{:?} {} ttl={}", e.key, value, e.ttl.is_some())
+            })
+            .collect();
+        lines.sort();
+        lines
+    }
+
+    fn remaining(store: &Store, key: &str) -> Duration {
+        match store.ttl(key.as_bytes()) {
+            TtlStatus::Remaining(d) => d,
+            _ => panic!("expected a TTL on {key}"),
+        }
+    }
+
+    #[test]
+    fn rewrite_then_replay_restores_every_type() {
+        let tmp = TempAof::new();
+        let aof = Aof::open(&tmp.path, FsyncPolicy::No).unwrap();
+        let store = Store::new();
+        store.set(b"s".to_vec(), b"1".to_vec(), Some(Duration::from_secs(100)));
+        store.set(b"plain".to_vec(), b"2".to_vec(), None);
+        store
+            .rpush(b"l".to_vec(), vec![b"x".to_vec(), b"y".to_vec()])
+            .unwrap();
+        store.expire(b"l", Duration::from_secs(100));
+        store
+            .hset(
+                b"h".to_vec(),
+                vec![
+                    (b"f1".to_vec(), b"v1".to_vec()),
+                    (b"f2".to_vec(), b"v2".to_vec()),
+                ],
+            )
+            .unwrap();
+
+        aof.rewrite(&store).unwrap();
+
+        let restored = Store::new();
+        assert_eq!(Aof::replay(&tmp.path, &restored).unwrap(), 5);
+        assert_eq!(dump(&restored), dump(&store));
+        for key in ["s", "l"] {
+            let left = remaining(&restored, key);
+            assert!(left > Duration::from_secs(90) && left <= Duration::from_secs(100));
+        }
+    }
+
+    #[test]
+    fn rewrite_compacts_and_later_writes_go_to_the_new_file() {
+        let tmp = TempAof::new();
+        let aof = Aof::open(&tmp.path, FsyncPolicy::No).unwrap();
+        let store = Store::new();
+        write(&aof, &store, &["SET", "a", "1"]);
+        write(&aof, &store, &["SET", "a", "2"]);
+        write(&aof, &store, &["SET", "b", "1"]);
+        let before = fs::metadata(&tmp.path).unwrap().len();
+
+        aof.rewrite(&store).unwrap();
+
+        let after = fs::metadata(&tmp.path).unwrap().len();
+        assert!(after < before);
+        assert!(!Path::new(&format!("{}.tmp", tmp.path)).exists());
+
+        write(&aof, &store, &["SET", "c", "3"]);
+        let restored = Store::new();
+        assert_eq!(Aof::replay(&tmp.path, &restored).unwrap(), 3);
+        assert_eq!(dump(&restored), dump(&store));
+    }
+
+    #[test]
+    fn rewrite_leaves_an_empty_file_for_an_empty_store() {
+        let tmp = TempAof::new();
+        let aof = Aof::open(&tmp.path, FsyncPolicy::No).unwrap();
+        let store = Store::new();
+        write(&aof, &store, &["SET", "a", "1"]);
+        write(&aof, &store, &["DEL", "a"]);
+
+        aof.rewrite(&store).unwrap();
+
+        assert_eq!(fs::metadata(&tmp.path).unwrap().len(), 0);
+        assert_eq!(Aof::replay(&tmp.path, &Store::new()).unwrap(), 0);
+    }
+
+    #[test]
+    fn failed_write_is_not_logged() {
+        let tmp = TempAof::new();
+        let aof = Aof::open(&tmp.path, FsyncPolicy::No).unwrap();
+        let store = Store::new();
+        write(&aof, &store, &["SET", "k", "v"]);
+
+        let reply = write(&aof, &store, &["LPUSH", "k", "x"]);
+
+        assert!(matches!(reply, Reply::Error(_)));
+        assert_eq!(Aof::replay(&tmp.path, &Store::new()).unwrap(), 1);
+    }
+
+    #[test]
+    fn replay_truncates_an_incomplete_tail() {
+        let tmp = TempAof::new();
+        let partial = b"*3\r\n$3\r\nSET\r\n$1\r\nb";
+        fs::write(&tmp.path, [SET_A, &partial[..]].concat()).unwrap();
+        let store = Store::new();
+
+        assert_eq!(Aof::replay(&tmp.path, &store).unwrap(), 1);
+
+        assert_eq!(fs::metadata(&tmp.path).unwrap().len(), SET_A.len() as u64);
+        assert_eq!(store.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert_eq!(store.dbsize(), 1);
+    }
+
+    #[test]
+    fn replay_fails_on_a_corrupt_record() {
+        let tmp = TempAof::new();
+        fs::write(&tmp.path, [SET_A, b"?garbage\r\n", SET_A].concat()).unwrap();
+
+        let err = Aof::replay(&tmp.path, &Store::new()).unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn replay_fails_on_an_unknown_command() {
+        let tmp = TempAof::new();
+        let mut file = File::create(&tmp.path).unwrap();
+        Aof::append(&mut file, &args(&["NOPE", "a"])).unwrap();
+
+        let err = Aof::replay(&tmp.path, &Store::new()).unwrap_err();
+
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn replay_does_not_restore_a_key_whose_deadline_passed() {
+        let tmp = TempAof::new();
+        let mut file = File::create(&tmp.path).unwrap();
+        Aof::append(&mut file, &args(&["SET", "gone", "v", "PXAT", "1000"])).unwrap();
+        Aof::append(&mut file, &args(&["SET", "kept", "v"])).unwrap();
+        let store = Store::new();
+
+        Aof::replay(&tmp.path, &store).unwrap();
+
+        assert_eq!(store.get(b"gone").unwrap(), None);
+        assert_eq!(store.get(b"kept").unwrap(), Some(b"v".to_vec()));
+        assert_eq!(store.dbsize(), 1);
+    }
+
+    #[test]
+    fn replay_keeps_the_original_deadline() {
+        let tmp = TempAof::new();
+        let deadline = (now_ms() + 60_000).to_string();
+        let mut file = File::create(&tmp.path).unwrap();
+        Aof::append(&mut file, &args(&["SET", "k", "v", "PXAT", &deadline])).unwrap();
+        let store = Store::new();
+
+        Aof::replay(&tmp.path, &store).unwrap();
+
+        let left = remaining(&store, "k");
+        assert!(left > Duration::from_secs(55) && left <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn convert_args_turns_a_set_ttl_into_pxat() {
+        let a = args(&["SET", "k", "v", "EX", "60"]);
+        let cmd = Command::from_args(&a).unwrap();
+
+        let before = now_ms();
+        let out = Aof::convert_args(&cmd, &a);
+        let after = now_ms();
+
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[..4], args(&["SET", "k", "v", "PXAT"])[..]);
+        let ms: u128 = String::from_utf8(out[4].clone()).unwrap().parse().unwrap();
+        assert!(ms >= before + 60_000 && ms <= after + 60_000);
+    }
+
+    #[test]
+    fn convert_args_turns_expire_into_pexpireat() {
+        let a = args(&["EXPIRE", "k", "30"]);
+        let cmd = Command::from_args(&a).unwrap();
+
+        let before = now_ms();
+        let out = Aof::convert_args(&cmd, &a);
+        let after = now_ms();
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[..2], args(&["PEXPIREAT", "k"])[..]);
+        let ms: u128 = String::from_utf8(out[2].clone()).unwrap().parse().unwrap();
+        assert!(ms >= before + 30_000 && ms <= after + 30_000);
+    }
+
+    #[test]
+    fn convert_args_leaves_other_commands_unchanged() {
+        for parts in [
+            &["SET", "k", "v"][..],
+            &["DEL", "a", "b"][..],
+            &["LPUSH", "l", "x"][..],
+            &["HSET", "h", "f", "v"][..],
+            &["PERSIST", "k"][..],
+        ] {
+            let a = args(parts);
+            let cmd = Command::from_args(&a).unwrap();
+            assert_eq!(Aof::convert_args(&cmd, &a), a);
+        }
+    }
+
+    #[test]
+    fn run_write_follows_the_fsync_policy() {
+        for (policy, expect_dirty) in [
+            (FsyncPolicy::Always, false),
+            (FsyncPolicy::EverySec, true),
+            (FsyncPolicy::No, false),
+        ] {
+            let tmp = TempAof::new();
+            let aof = Aof::open(&tmp.path, policy).unwrap();
+            let store = Store::new();
+
+            write(&aof, &store, &["SET", "k", "v"]);
+
+            assert_eq!(aof.dirty.load(Ordering::Relaxed), expect_dirty);
+            assert!(fs::metadata(&tmp.path).unwrap().len() > 0);
+        }
+    }
+
+    #[test]
+    fn everysec_task_clears_the_dirty_flag() {
+        let tmp = TempAof::new();
+        let aof = Aof::open(&tmp.path, FsyncPolicy::EverySec).unwrap();
+        aof.start_fsync_task();
+        let store = Store::new();
+
+        write(&aof, &store, &["SET", "k", "v"]);
+        assert!(aof.dirty.load(Ordering::Relaxed));
+
+        std::thread::sleep(Duration::from_millis(1600));
+        assert!(!aof.dirty.load(Ordering::Relaxed));
+    }
+}
