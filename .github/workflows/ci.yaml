@@ -27,3 +27,9 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Clippy (lite)
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
+
+      - name: Test (lite)
+        run: cargo test --no-default-features
