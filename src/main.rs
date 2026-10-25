@@ -19,38 +19,16 @@ mod store;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port = std::env::var("EXPOSE_PORT").unwrap_or_else(|_| "3131".to_string());
+    let bind_addr = env_or("BIND_ADDR", "0.0.0.0");
+    let port = env_or("EXPOSE_PORT", "3131");
+    let purge_limit = env_positive_u64("PURGE_LIMIT", 1000)?;
+    let purge_int = env_positive_u64("PURGE_INTERVAL", 100)?;
+    let aof_path = env_or("AOF_PATH", "/data/appendonly.aof");
+    let policy = parse_fsync_policy(&env_or("AOF_FSYNC", "everysec"))?;
+
     let addr = format!("{}:{}", bind_addr, port);
     let listener = TcpListener::bind(addr.clone()).await?;
     log_info!("Listening on: {}", addr);
-
-    let purge_limit: u64 = match std::env::var("PURGE_LIMIT") {
-        Ok(v) => v.parse().expect("PURGE_LIMIT must be a positive integer"),
-        Err(_) => 1000,
-    };
-
-    let purge_int: u64 = match std::env::var("PURGE_INTERVAL") {
-        Ok(v) => v
-            .parse()
-            .expect("PURGE_INTERVAL must be a positive integer"),
-        Err(_) => 100,
-    };
-
-    if purge_limit == 0 || purge_int == 0 {
-        log_err!("purge_limit and purge_int should be a positive value");
-        return Err("purge_limit and purge_int should be a positive value".into());
-    }
-
-    let aof_path = std::env::var("AOF_PATH").unwrap_or_else(|_| "/data/appendonly.aof".to_string());
-
-    let fsync = std::env::var("AOF_FSYNC").unwrap_or_else(|_| "everysec".to_string());
-    let policy = match fsync.to_ascii_lowercase().as_str() {
-        "always" => FsyncPolicy::Always,
-        "everysec" => FsyncPolicy::EverySec,
-        "no" => FsyncPolicy::No,
-        _ => return Err("AOF_FSYNC must be always, everysec or no".into()),
-    };
 
     let store = Store::new();
     let aof = Aof::open(&aof_path, policy)?;
@@ -90,6 +68,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn env_or(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_positive_u64(name: &str, default: u64) -> Result<u64, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(v) => match v.parse::<u64>() {
+            Ok(n) if n > 0 => Ok(n),
+            _ => Err(format!("{name} must be a positive integer")),
+        },
+    }
+}
+
+fn parse_fsync_policy(value: &str) -> Result<FsyncPolicy, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "always" => Ok(FsyncPolicy::Always),
+        "everysec" => Ok(FsyncPolicy::EverySec),
+        "no" => Ok(FsyncPolicy::No),
+        _ => Err("AOF_FSYNC must be always, everysec or no".to_string()),
+    }
+}
+
+fn dispatch(args: &[Vec<u8>], store: &Store, aof: &Aof) -> Reply {
+    let cmd = match Command::from_args(args) {
+        Ok(cmd) => cmd,
+        Err(e) => return Reply::from(e),
+    };
+    if matches!(cmd, Command::Rewriteaof) {
+        match aof.rewrite(store) {
+            Ok(()) => {
+                log_info!("AOF rewritten");
+                Reply::Simple("OK")
+            }
+            Err(e) => {
+                log_err!("AOF rewrite failed: {}", e);
+                Reply::Error(format!("ERR AOF rewrite failed: {e}"))
+            }
+        }
+    } else if cmd.is_write() {
+        aof.run_write(cmd, args, store)
+    } else {
+        cmd.execute(store)
+    }
+}
+
 async fn handle_client(
     mut stream: TcpStream,
     peer_addr: SocketAddr,
@@ -124,33 +148,8 @@ async fn handle_client(
                         continue;
                     }
                     let mut out = Vec::new();
-
-                    match Command::from_args(&args) {
-                        Ok(cmd) => {
-                            if matches!(cmd, Command::Rewriteaof) {
-                                match aof.rewrite(store) {
-                                    Ok(()) => {
-                                        log_info!("AOF rewritten");
-                                        Reply::Simple("OK").encode(&mut out);
-                                    }
-                                    Err(e) => {
-                                        log_err!("AOF rewrite failed: {}", e);
-                                        Reply::Error(format!("ERR AOF rewrite failed: {e}"))
-                                            .encode(&mut out);
-                                    }
-                                }
-                            } else if cmd.is_write() {
-                                aof.run_write(cmd, &args, store).encode(&mut out);
-                            } else {
-                                cmd.execute(store).encode(&mut out);
-                            }
-                            stream.write_all(&out).await?;
-                        }
-                        Err(e) => {
-                            Reply::from(e).encode(&mut out);
-                            stream.write_all(&out).await?
-                        }
-                    }
+                    dispatch(&args, store, aof).encode(&mut out);
+                    stream.write_all(&out).await?;
                 }
                 Ok(None) => break,
                 Err(e) => {

@@ -12,8 +12,22 @@ use std::{
 use crate::{
     command::{Command, Reply},
     log_err, log_warn, resp,
-    store::{SnapshotValue, Store},
+    store::{SnapshotEntry, SnapshotValue, Store},
 };
+
+fn unix_now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn expire_at_ms(now_ms: u128, ttl: &Duration) -> Vec<u8> {
+    (now_ms + ttl.as_millis())
+        .min(i64::MAX as u128)
+        .to_string()
+        .into_bytes()
+}
 
 #[derive(Clone)]
 pub struct Aof {
@@ -51,16 +65,7 @@ impl Aof {
     }
 
     fn convert_args(cmd: &Command, args: &[Vec<u8>]) -> Vec<Vec<u8>> {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let expire_at_ms = |ttl: &Duration| {
-            (now_ms + ttl.as_millis())
-                .min(i64::MAX as u128)
-                .to_string()
-                .into_bytes()
-        };
+        let now_ms = unix_now_ms();
         match cmd {
             Command::Set {
                 key,
@@ -71,10 +76,14 @@ impl Aof {
                 key.clone(),
                 value.clone(),
                 b"PXAT".to_vec(),
-                expire_at_ms(ttl),
+                expire_at_ms(now_ms, ttl),
             ],
             Command::Expire { key, ttl } => {
-                vec![b"PEXPIREAT".to_vec(), key.clone(), expire_at_ms(ttl)]
+                vec![
+                    b"PEXPIREAT".to_vec(),
+                    key.clone(),
+                    expire_at_ms(now_ms, ttl),
+                ]
             }
             _ => args.to_vec(),
         }
@@ -121,49 +130,11 @@ impl Aof {
             .create_new(true)
             .append(true)
             .open(&tmp_path)?;
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
+        let now_ms = unix_now_ms();
 
         let result = (|| -> io::Result<()> {
             for entry in &entries {
-                let key = entry.key.clone();
-                let expire_at = entry.ttl.as_ref().map(|ttl| {
-                    (now_ms + ttl.as_millis())
-                        .min(i64::MAX as u128)
-                        .to_string()
-                        .into_bytes()
-                });
-                match &entry.value {
-                    SnapshotValue::Value(v) => {
-                        let mut args = vec![b"SET".to_vec(), key, v.clone()];
-                        if let Some(ms) = expire_at {
-                            args.push(b"PXAT".to_vec());
-                            args.push(ms);
-                        }
-                        Self::append(&mut tmp, &args)?;
-                    }
-                    SnapshotValue::List(items) => {
-                        let mut args = vec![b"RPUSH".to_vec(), key.clone()];
-                        args.extend(items.iter().cloned());
-                        Self::append(&mut tmp, &args)?;
-                        if let Some(ms) = expire_at {
-                            Self::append(&mut tmp, &[b"PEXPIREAT".to_vec(), key, ms])?;
-                        }
-                    }
-                    SnapshotValue::Hash(pairs) => {
-                        let mut args = vec![b"HSET".to_vec(), key.clone()];
-                        for (f, v) in pairs {
-                            args.push(f.clone());
-                            args.push(v.clone());
-                        }
-                        Self::append(&mut tmp, &args)?;
-                        if let Some(ms) = expire_at {
-                            Self::append(&mut tmp, &[b"PEXPIREAT".to_vec(), key, ms])?;
-                        }
-                    }
-                }
+                Self::write_entry(&mut tmp, entry, now_ms)?;
             }
             tmp.sync_all()?;
             fs::rename(&tmp_path, &self.path)
@@ -175,6 +146,43 @@ impl Aof {
         }
         *file = tmp;
         Ok(())
+    }
+
+    fn write_entry(file: &mut File, entry: &SnapshotEntry, now_ms: u128) -> io::Result<()> {
+        let key = entry.key.clone();
+        let expire_at = entry.ttl.as_ref().map(|ttl| expire_at_ms(now_ms, ttl));
+        match &entry.value {
+            SnapshotValue::Value(v) => {
+                let mut args = vec![b"SET".to_vec(), key, v.clone()];
+                if let Some(ms) = expire_at {
+                    args.push(b"PXAT".to_vec());
+                    args.push(ms);
+                }
+                Self::append(file, &args)
+            }
+            SnapshotValue::List(items) => {
+                let mut args = vec![b"RPUSH".to_vec(), key.clone()];
+                args.extend(items.iter().cloned());
+                Self::append(file, &args)?;
+                Self::append_expire(file, key, expire_at)
+            }
+            SnapshotValue::Hash(pairs) => {
+                let mut args = vec![b"HSET".to_vec(), key.clone()];
+                for (f, v) in pairs {
+                    args.push(f.clone());
+                    args.push(v.clone());
+                }
+                Self::append(file, &args)?;
+                Self::append_expire(file, key, expire_at)
+            }
+        }
+    }
+
+    fn append_expire(file: &mut File, key: Vec<u8>, expire_at: Option<Vec<u8>>) -> io::Result<()> {
+        match expire_at {
+            Some(ms) => Self::append(file, &[b"PEXPIREAT".to_vec(), key, ms]),
+            None => Ok(()),
+        }
     }
 
     pub fn replay(path: &str, store: &Store) -> io::Result<usize> {
