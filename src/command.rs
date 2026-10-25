@@ -2,17 +2,22 @@ mod error;
 mod reply;
 mod types;
 
-use crate::store::{Store, TtlStatus};
+use crate::store::Store;
+#[cfg(feature = "full")]
+use crate::store::TtlStatus;
 use error::CommandError;
 pub use reply::Reply;
+#[cfg(feature = "full")]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub use types::Command;
 
 impl Command {
+    #[cfg(feature = "full")]
     fn parse_int(arg: &[u8]) -> Result<i64, CommandError> {
         let s = std::str::from_utf8(arg).map_err(|_| CommandError::NotAnInteger)?;
         s.parse().map_err(|_| CommandError::NotAnInteger)
     }
+    #[cfg(feature = "full")]
     fn expire_command(
         key: &[u8],
         arg: &[u8],
@@ -34,11 +39,13 @@ impl Command {
             ttl,
         })
     }
+    #[cfg(feature = "full")]
     fn calculate_remaining(expire_at: u64, unit: fn(u64) -> Duration) -> Duration {
         (UNIX_EPOCH + unit(expire_at))
             .duration_since(SystemTime::now())
             .unwrap_or_default()
     }
+    #[cfg(feature = "full")]
     fn expire_at_command(
         key: &[u8],
         arg: &[u8],
@@ -87,8 +94,10 @@ impl Command {
                 3 => Ok(Command::Set {
                     key: args[1].clone(),
                     value: args[2].clone(),
+                    #[cfg(feature = "full")]
                     ttl: None,
                 }),
+                #[cfg(feature = "full")]
                 5 => {
                     let parsed: i64 = Self::parse_int(&args[4])?;
                     if parsed <= 0 {
@@ -119,46 +128,55 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("del")),
             },
+            #[cfg(feature = "full")]
             b"TTL" => match args.len() {
                 2 => Ok(Command::Ttl {
                     key: args[1].clone(),
                 }),
                 _ => Err(CommandError::WrongArity("ttl")),
             },
+            #[cfg(feature = "full")]
             b"PTTL" => match args.len() {
                 2 => Ok(Command::Pttl {
                     key: args[1].clone(),
                 }),
                 _ => Err(CommandError::WrongArity("pttl")),
             },
+            #[cfg(feature = "full")]
             b"EXPIRE" => match args.len() {
                 3 => Self::expire_command(&args[1], &args[2], Duration::from_secs, "expire"),
                 _ => Err(CommandError::WrongArity("expire")),
             },
+            #[cfg(feature = "full")]
             b"PEXPIRE" => match args.len() {
                 3 => Self::expire_command(&args[1], &args[2], Duration::from_millis, "pexpire"),
                 _ => Err(CommandError::WrongArity("pexpire")),
             },
+            #[cfg(feature = "full")]
             b"PEXPIREAT" => match args.len() {
                 3 => {
                     Self::expire_at_command(&args[1], &args[2], Duration::from_millis, "pexpireat")
                 }
                 _ => Err(CommandError::WrongArity("pexpireat")),
             },
+            #[cfg(feature = "full")]
             b"PERSIST" => match args.len() {
                 2 => Ok(Command::Persist {
                     key: args[1].clone(),
                 }),
                 _ => Err(CommandError::WrongArity("persist")),
             },
+            #[cfg(feature = "full")]
             b"REWRITEAOF" => match args.len() {
                 1 => Ok(Command::Rewriteaof),
                 _ => Err(CommandError::WrongArity("rewriteaof")),
             },
+            #[cfg(feature = "full")]
             b"DBSIZE" => match args.len() {
                 1 => Ok(Command::Dbsize {}),
                 _ => Err(CommandError::WrongArity("dbsize")),
             },
+            #[cfg(feature = "full")]
             b"LPUSH" => match args.len() {
                 3.. => Ok(Command::Lpush {
                     key: args[1].clone(),
@@ -166,6 +184,7 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("lpush")),
             },
+            #[cfg(feature = "full")]
             b"RPUSH" => match args.len() {
                 3.. => Ok(Command::Rpush {
                     key: args[1].clone(),
@@ -173,24 +192,28 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("rpush")),
             },
+            #[cfg(feature = "full")]
             b"LPOP" => match args.len() {
                 2 => Ok(Command::Lpop {
                     key: args[1].clone(),
                 }),
                 _ => Err(CommandError::WrongArity("lpop")),
             },
+            #[cfg(feature = "full")]
             b"RPOP" => match args.len() {
                 2 => Ok(Command::Rpop {
                     key: args[1].clone(),
                 }),
                 _ => Err(CommandError::WrongArity("rpop")),
             },
+            #[cfg(feature = "full")]
             b"LLEN" => match args.len() {
                 2 => Ok(Command::Llen {
                     key: args[1].clone(),
                 }),
                 _ => Err(CommandError::WrongArity("llen")),
             },
+            #[cfg(feature = "full")]
             b"LRANGE" => match args.len() {
                 4 => Ok(Command::Lrange {
                     key: args[1].clone(),
@@ -199,6 +222,7 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("lrange")),
             },
+            #[cfg(feature = "full")]
             b"HSET" => match args.len() {
                 n if n >= 4 && n % 2 == 0 => Ok(Command::Hset {
                     key: args[1].clone(),
@@ -211,6 +235,7 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("hset")),
             },
+            #[cfg(feature = "full")]
             b"HGET" => match args.len() {
                 3 => Ok(Command::Hget {
                     key: args[1].clone(),
@@ -218,6 +243,7 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("hget")),
             },
+            #[cfg(feature = "full")]
             b"HDEL" => match args.len() {
                 3.. => Ok(Command::Hdel {
                     key: args[1].clone(),
@@ -225,12 +251,14 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("hdel")),
             },
+            #[cfg(feature = "full")]
             b"HLEN" => match args.len() {
                 2 => Ok(Command::Hlen {
                     key: args[1].clone(),
                 }),
                 _ => Err(CommandError::WrongArity("hlen")),
             },
+            #[cfg(feature = "full")]
             b"HEXISTS" => match args.len() {
                 3 => Ok(Command::Hexists {
                     key: args[1].clone(),
@@ -238,12 +266,14 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("hexists")),
             },
+            #[cfg(feature = "full")]
             b"HGETALL" => match args.len() {
                 2 => Ok(Command::Hgetall {
                     key: args[1].clone(),
                 }),
                 _ => Err(CommandError::WrongArity("hgetall")),
             },
+            #[cfg(feature = "full")]
             b"TYPE" => match args.len() {
                 2 => Ok(Command::Type {
                     key: args[1].clone(),
@@ -265,81 +295,109 @@ impl Command {
                 Ok(Some(value)) => Reply::Bulk(value),
                 Err(e) => CommandError::from(e).into(),
             },
-            Command::Set { key, value, ttl } => {
-                store.set(key, value, ttl);
+            Command::Set {
+                key,
+                value,
+                #[cfg(feature = "full")]
+                ttl,
+            } => {
+                store.set(
+                    key,
+                    value,
+                    #[cfg(feature = "full")]
+                    ttl,
+                );
                 Reply::Simple("OK")
             }
             Command::Del { keys } => {
                 let removed = store.del(&keys);
                 Reply::Integer(removed as i64)
             }
+            #[cfg(feature = "full")]
             Command::Ttl { key } => match store.ttl(&key) {
                 TtlStatus::NoKey => Reply::Integer(-2),
                 TtlStatus::NoExpiry => Reply::Integer(-1),
                 TtlStatus::Remaining(d) => Reply::Integer(((d.as_millis() + 500) / 1000) as i64),
             },
+            #[cfg(feature = "full")]
             Command::Pttl { key } => match store.ttl(&key) {
                 TtlStatus::NoKey => Reply::Integer(-2),
                 TtlStatus::NoExpiry => Reply::Integer(-1),
                 TtlStatus::Remaining(d) => Reply::Integer(d.as_millis() as i64),
             },
+            #[cfg(feature = "full")]
             Command::Expire { key, ttl } => {
                 let result = store.expire(&key, ttl);
                 Reply::Integer(result.into())
             }
+            #[cfg(feature = "full")]
             Command::Persist { key } => {
                 let result = store.persist(&key);
                 Reply::Integer(result.into())
             }
+            #[cfg(feature = "full")]
             Command::Dbsize {} => Reply::Integer(store.dbsize() as i64),
+            #[cfg(feature = "full")]
             Command::Rewriteaof => Reply::Error("ERR REWRITEAOF is handled by the AOF".to_string()),
+            #[cfg(feature = "full")]
             Command::Lpush { key, values } => match store.lpush(key, values) {
                 Ok(len) => Reply::Integer(len as i64),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Rpush { key, values } => match store.rpush(key, values) {
                 Ok(len) => Reply::Integer(len as i64),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Lpop { key } => match store.lpop(&key) {
                 Ok(None) => Reply::Nil,
                 Ok(Some(v)) => Reply::Bulk(v),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Rpop { key } => match store.rpop(&key) {
                 Ok(None) => Reply::Nil,
                 Ok(Some(v)) => Reply::Bulk(v),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Llen { key } => match store.llen(&key) {
                 Ok(len) => Reply::Integer(len as i64),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Lrange { key, start, stop } => match store.lrange(&key, start, stop) {
                 Ok(items) => Reply::Array(items.into_iter().map(Reply::Bulk).collect()),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Hset { key, pairs } => match store.hset(key, pairs) {
                 Ok(added) => Reply::Integer(added as i64),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Hget { key, field } => match store.hget(&key, &field) {
                 Ok(None) => Reply::Nil,
                 Ok(Some(v)) => Reply::Bulk(v),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Hdel { key, fields } => match store.hdel(&key, &fields) {
                 Ok(removed) => Reply::Integer(removed as i64),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Hlen { key } => match store.hlen(&key) {
                 Ok(len) => Reply::Integer(len as i64),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Hexists { key, field } => match store.hexists(&key, &field) {
                 Ok(exists) => Reply::Integer(exists.into()),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Hgetall { key } => match store.hgetall(&key) {
                 Ok(pairs) => Reply::Array(
                     pairs
@@ -349,24 +407,25 @@ impl Command {
                 ),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
             Command::Type { key } => Reply::Simple(store.key_type(&key)),
         }
     }
 
     pub fn is_write(&self) -> bool {
-        matches!(
-            self,
-            Command::Set { .. }
-                | Command::Del { .. }
-                | Command::Expire { .. }
-                | Command::Persist { .. }
-                | Command::Lpush { .. }
-                | Command::Rpush { .. }
-                | Command::Lpop { .. }
-                | Command::Rpop { .. }
-                | Command::Hset { .. }
-                | Command::Hdel { .. }
-        )
+        match self {
+            Command::Set { .. } | Command::Del { .. } => true,
+            #[cfg(feature = "full")]
+            Command::Expire { .. }
+            | Command::Persist { .. }
+            | Command::Lpush { .. }
+            | Command::Rpush { .. }
+            | Command::Lpop { .. }
+            | Command::Rpop { .. }
+            | Command::Hset { .. }
+            | Command::Hdel { .. } => true,
+            _ => false,
+        }
     }
 }
 

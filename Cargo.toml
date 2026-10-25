@@ -4,6 +4,10 @@ version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["full"]
+full = []
+
 [dependencies]
 chrono = "0.4.45"
-tokio = { version = "1.53.2", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }

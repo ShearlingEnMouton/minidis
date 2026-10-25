@@ -52,12 +52,15 @@ impl From<CommandError> for Reply {
             CommandError::WrongArity(cmd) => {
                 Reply::Error(format!("ERR wrong number of arguments for '{cmd}' command"))
             }
+            #[cfg(feature = "full")]
             CommandError::NotAnInteger => {
                 Reply::Error("ERR value is not an integer or out of range".to_owned())
             }
+            #[cfg(feature = "full")]
             CommandError::InvalidExpire(cmd) => {
                 Reply::Error(format!("ERR invalid expire time in '{cmd}' command"))
             }
+            #[cfg(feature = "full")]
             CommandError::SyntaxError => Reply::Error("ERR syntax error".to_owned()),
         }
     }

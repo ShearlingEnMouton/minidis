@@ -1,3 +1,5 @@
+#[cfg(feature = "full")]
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, ErrorKind, Write},
@@ -6,15 +8,18 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
+#[cfg(feature = "full")]
+use crate::store::{SnapshotEntry, SnapshotValue};
 use crate::{
     command::{Command, Reply},
     log_err, log_warn, resp,
-    store::{SnapshotEntry, SnapshotValue, Store},
+    store::Store,
 };
 
+#[cfg(feature = "full")]
 fn unix_now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -22,6 +27,7 @@ fn unix_now_ms() -> u128 {
         .as_millis()
 }
 
+#[cfg(feature = "full")]
 fn expire_at_ms(now_ms: u128, ttl: &Duration) -> Vec<u8> {
     (now_ms + ttl.as_millis())
         .min(i64::MAX as u128)
@@ -29,9 +35,22 @@ fn expire_at_ms(now_ms: u128, ttl: &Duration) -> Vec<u8> {
         .into_bytes()
 }
 
+#[cfg(feature = "full")]
+const REPLAY_HINT: &str = "";
+#[cfg(not(feature = "full"))]
+const REPLAY_HINT: &str = " (this build supports only PING, GET, SET and DEL; the AOF may have been written by the full build)";
+
+fn command_name(arg: &[u8]) -> String {
+    String::from_utf8_lossy(&arg[..arg.len().min(32)])
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct Aof {
     file: Arc<Mutex<File>>,
+    #[cfg(feature = "full")]
     path: String,
     policy: FsyncPolicy,
     dirty: Arc<AtomicBool>,
@@ -52,6 +71,7 @@ impl Aof {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Aof {
             file: Arc::new(Mutex::new(file)),
+            #[cfg(feature = "full")]
             path: path.to_string(),
             policy,
             dirty: Arc::new(AtomicBool::new(false)),
@@ -65,19 +85,24 @@ impl Aof {
     }
 
     fn convert_args(cmd: &Command, args: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        #[cfg(feature = "full")]
         let now_ms = unix_now_ms();
         match cmd {
             Command::Set {
                 key,
                 value,
-                ttl: Some(ttl),
+                #[cfg(feature = "full")]
+                    ttl: Some(ttl),
             } => vec![
                 b"SET".to_vec(),
                 key.clone(),
                 value.clone(),
+                #[cfg(feature = "full")]
                 b"PXAT".to_vec(),
+                #[cfg(feature = "full")]
                 expire_at_ms(now_ms, ttl),
             ],
+            #[cfg(feature = "full")]
             Command::Expire { key, ttl } => {
                 vec![
                     b"PEXPIREAT".to_vec(),
@@ -117,6 +142,7 @@ impl Aof {
         reply
     }
 
+    #[cfg(feature = "full")]
     pub fn rewrite(&self, store: &Store) -> io::Result<()> {
         let mut file = self.file.lock().unwrap();
         let entries = store.snapshot();
@@ -148,6 +174,7 @@ impl Aof {
         Ok(())
     }
 
+    #[cfg(feature = "full")]
     fn write_entry(file: &mut File, entry: &SnapshotEntry, now_ms: u128) -> io::Result<()> {
         let key = entry.key.clone();
         let expire_at = entry.ttl.as_ref().map(|ttl| expire_at_ms(now_ms, ttl));
@@ -178,6 +205,7 @@ impl Aof {
         }
     }
 
+    #[cfg(feature = "full")]
     fn append_expire(file: &mut File, key: Vec<u8>, expire_at: Option<Vec<u8>>) -> io::Result<()> {
         match expire_at {
             Some(ms) => Self::append(file, &[b"PEXPIREAT".to_vec(), key, ms]),
@@ -196,7 +224,12 @@ impl Aof {
                         let cmd = Command::from_args(&args).map_err(|_| {
                             io::Error::new(
                                 ErrorKind::InvalidData,
-                                format!("invalid command in AOF at byte {}", offset),
+                                format!(
+                                    "invalid command in AOF at byte {}: '{}'{}",
+                                    offset,
+                                    command_name(&args[0]),
+                                    REPLAY_HINT,
+                                ),
                             )
                         })?;
                         cmd.execute(store);

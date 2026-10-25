@@ -10,6 +10,9 @@ imagePullSecrets: []
 
 replicas: 1
 
+# enum: full(default) | lite
+variant: full
+
 lifecycle:
   preStop:
     sleep:

@@ -53,6 +53,7 @@ impl Inner {
         }
         true
     }
+
     fn purge_expired(&mut self, limit: u64) -> u64 {
         let now = Instant::now();
         let mut removed = 0;

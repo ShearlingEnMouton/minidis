@@ -12,3 +12,4 @@ data:
   PURGE_INTERVAL: {{ .Values.purge.interval | quote }}
   AOF_PATH: {{ .Values.aof.path | quote }}
   AOF_FSYNC: {{ .Values.aof.fsync | quote }}
+  VARIANT: {{ .Values.variant | quote }}

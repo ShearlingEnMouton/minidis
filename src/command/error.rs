@@ -2,10 +2,16 @@ use crate::store::StoreError;
 
 #[derive(Debug)]
 pub enum CommandError {
-    UnknownCommand { name: String, args: String },
+    UnknownCommand {
+        name: String,
+        args: String,
+    },
     WrongArity(&'static str),
+    #[cfg(feature = "full")]
     NotAnInteger,
+    #[cfg(feature = "full")]
     InvalidExpire(&'static str),
+    #[cfg(feature = "full")]
     SyntaxError,
     WrongType,
 }

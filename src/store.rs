@@ -1,13 +1,21 @@
 use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::HashMap,
     sync::{Arc, Mutex},
+};
+#[cfg(feature = "full")]
+use std::{
+    collections::{BTreeSet, VecDeque},
     time::{Duration, Instant},
 };
 
+#[cfg(feature = "full")]
 mod expiry;
+#[cfg(feature = "full")]
 mod hash;
+#[cfg(feature = "full")]
 mod list;
 
+#[cfg(feature = "full")]
 pub use expiry::TtlStatus;
 
 #[derive(Clone)]
@@ -16,24 +24,30 @@ pub struct Store {
 }
 #[derive(Debug)]
 pub enum StoreError {
+    #[cfg_attr(not(feature = "full"), allow(dead_code))]
     WrongType,
 }
 struct Inner {
     data: HashMap<Vec<u8>, Entry>,
+    #[cfg(feature = "full")]
     expirations: BTreeSet<(Instant, Vec<u8>)>,
 }
 
 enum EntryType {
     Value(Vec<u8>),
+    #[cfg(feature = "full")]
     List(VecDeque<Vec<u8>>),
+    #[cfg(feature = "full")]
     Hash(HashMap<Vec<u8>, Vec<u8>>),
 }
 struct Entry {
     value: EntryType,
+    #[cfg(feature = "full")]
     expires_at: Option<Instant>,
 }
 
 impl Entry {
+    #[cfg(feature = "full")]
     fn is_expired(&self) -> bool {
         self.expires_at.is_some_and(|t| Instant::now() >= t)
     }
@@ -45,15 +59,20 @@ impl Default for Store {
     }
 }
 
+#[cfg(feature = "full")]
 pub enum SnapshotValue {
     Value(Vec<u8>),
+    #[cfg(feature = "full")]
     List(Vec<Vec<u8>>),
+    #[cfg(feature = "full")]
     Hash(Vec<(Vec<u8>, Vec<u8>)>),
 }
 
+#[cfg(feature = "full")]
 pub struct SnapshotEntry {
     pub key: Vec<u8>,
     pub value: SnapshotValue,
+    #[cfg(feature = "full")]
     pub ttl: Option<Duration>,
 }
 
@@ -62,59 +81,84 @@ impl Store {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 data: HashMap::new(),
+                #[cfg(feature = "full")]
                 expirations: BTreeSet::new(),
             })),
         }
     }
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        #[cfg_attr(not(feature = "full"), allow(unused_mut))]
         let mut g = self.inner.lock().unwrap();
+        #[cfg(feature = "full")]
         g.purge_if_expired(key);
         match g.data.get(key) {
             None => Ok(None),
             Some(e) => match &e.value {
                 EntryType::Value(v) => Ok(Some(v.clone())),
+                #[cfg(feature = "full")]
                 _ => Err(StoreError::WrongType),
             },
         }
     }
-    pub fn set(&self, key: Vec<u8>, value: Vec<u8>, ttl: Option<Duration>) {
+    pub fn set(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        #[cfg(feature = "full")] ttl: Option<Duration>,
+    ) {
+        #[cfg(feature = "full")]
         let expires_at = ttl.map(|d| Instant::now() + d);
-        self.inner
-            .lock()
-            .unwrap()
-            .insert(key, EntryType::Value(value), expires_at);
+        self.inner.lock().unwrap().insert(
+            key,
+            EntryType::Value(value),
+            #[cfg(feature = "full")]
+            expires_at,
+        );
     }
     pub fn del(&self, keys: &[Vec<u8>]) -> usize {
         let mut g = self.inner.lock().unwrap();
         keys.iter()
-            .filter(|k| g.remove(k).is_some_and(|e| !e.is_expired()))
+            .filter(|k| {
+                let removed = g.remove(k);
+                #[cfg(feature = "full")]
+                let removed = removed.filter(|e| !e.is_expired());
+                removed.is_some()
+            })
             .count()
     }
+    #[cfg(feature = "full")]
     pub fn dbsize(&self) -> usize {
         let mut g = self.inner.lock().unwrap();
         g.dbsize()
     }
 
+    #[cfg(feature = "full")]
     pub fn snapshot(&self) -> Vec<SnapshotEntry> {
         let g = self.inner.lock().unwrap();
+        #[cfg(feature = "full")]
         let now = Instant::now();
-        g.data
-            .iter()
-            .filter(|(_, e)| !e.is_expired())
+        let entries = g.data.iter();
+        #[cfg(feature = "full")]
+        let entries = entries.filter(|(_, e)| !e.is_expired());
+        entries
             .map(|(key, e)| SnapshotEntry {
                 key: key.clone(),
                 value: match &e.value {
                     EntryType::Value(v) => SnapshotValue::Value(v.clone()),
+                    #[cfg(feature = "full")]
                     EntryType::List(l) => SnapshotValue::List(l.iter().cloned().collect()),
+                    #[cfg(feature = "full")]
                     EntryType::Hash(h) => {
                         SnapshotValue::Hash(h.iter().map(|(f, v)| (f.clone(), v.clone())).collect())
                     }
                 },
+                #[cfg(feature = "full")]
                 ttl: e.expires_at.map(|t| t.saturating_duration_since(now)),
             })
             .collect()
     }
 
+    #[cfg(feature = "full")]
     pub fn key_type(&self, key: &[u8]) -> &'static str {
         let mut g = self.inner.lock().unwrap();
         g.purge_if_expired(key);
@@ -130,26 +174,42 @@ impl Store {
 impl Inner {
     fn remove(&mut self, key: &[u8]) -> Option<Entry> {
         let entry = self.data.remove(key)?;
+        #[cfg(feature = "full")]
         if let Some(t) = entry.expires_at {
             self.expirations.remove(&(t, key.to_vec()));
         }
         Some(entry)
     }
 
-    fn insert(&mut self, key: Vec<u8>, value: EntryType, expires_at: Option<Instant>) {
+    fn insert(
+        &mut self,
+        key: Vec<u8>,
+        value: EntryType,
+        #[cfg(feature = "full")] expires_at: Option<Instant>,
+    ) {
         self.remove(&key);
+        #[cfg(feature = "full")]
         if let Some(t) = expires_at {
             self.expirations.insert((t, key.clone()));
         }
-        self.data.insert(key, Entry { value, expires_at });
+        self.data.insert(
+            key,
+            Entry {
+                value,
+                #[cfg(feature = "full")]
+                expires_at,
+            },
+        );
     }
 
+    #[cfg(feature = "full")]
     fn purge_if_expired(&mut self, key: &[u8]) {
         if self.data.get(key).is_some_and(|e| e.is_expired()) {
             self.remove(key);
         }
     }
 
+    #[cfg(feature = "full")]
     fn dbsize(&mut self) -> usize {
         self.data.len()
     }

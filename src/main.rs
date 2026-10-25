@@ -1,8 +1,15 @@
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
+
+#[cfg(feature = "full")]
+use std::time::Duration;
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+};
+
+#[cfg(feature = "full")]
+use tokio::{
     task,
     time::{MissedTickBehavior, interval},
 };
@@ -21,7 +28,9 @@ mod store;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr = env_or("BIND_ADDR", "0.0.0.0");
     let port = env_or("EXPOSE_PORT", "3131");
+    #[cfg(feature = "full")]
     let purge_limit = env_positive_u64("PURGE_LIMIT", 1000)?;
+    #[cfg(feature = "full")]
     let purge_int = env_positive_u64("PURGE_INTERVAL", 100)?;
     let aof_path = env_or("AOF_PATH", "/data/appendonly.aof");
     let policy = parse_fsync_policy(&env_or("AOF_FSYNC", "everysec"))?;
@@ -38,7 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     aof.start_fsync_task();
 
+    #[cfg(feature = "full")]
     let reaper_store = store.clone();
+    #[cfg(feature = "full")]
     task::spawn(async move {
         let mut purge_interval = interval(Duration::from_millis(purge_int));
         purge_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -72,6 +83,7 @@ fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
+#[cfg(feature = "full")]
 fn env_positive_u64(name: &str, default: u64) -> Result<u64, String> {
     match std::env::var(name) {
         Err(_) => Ok(default),
@@ -96,8 +108,9 @@ fn dispatch(args: &[Vec<u8>], store: &Store, aof: &Aof) -> Reply {
         Ok(cmd) => cmd,
         Err(e) => return Reply::from(e),
     };
+    #[cfg(feature = "full")]
     if matches!(cmd, Command::Rewriteaof) {
-        match aof.rewrite(store) {
+        return match aof.rewrite(store) {
             Ok(()) => {
                 log_info!("AOF rewritten");
                 Reply::Simple("OK")
@@ -106,8 +119,9 @@ fn dispatch(args: &[Vec<u8>], store: &Store, aof: &Aof) -> Reply {
                 log_err!("AOF rewrite failed: {}", e);
                 Reply::Error(format!("ERR AOF rewrite failed: {e}"))
             }
-        }
-    } else if cmd.is_write() {
+        };
+    }
+    if cmd.is_write() {
         aof.run_write(cmd, args, store)
     } else {
         cmd.execute(store)
