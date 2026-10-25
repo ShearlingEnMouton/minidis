@@ -289,7 +289,10 @@ fn a_bad_command_does_not_close_the_connection() {
     let mut c = server.connect();
 
     assert!(send(&mut c, &["NOPE"]).starts_with("-ERR unknown command"));
-    assert_eq!(send(&mut c, &["GET"]), "-ERR wrong number of arguments for 'get' command\r\n");
+    assert_eq!(
+        send(&mut c, &["GET"]),
+        "-ERR wrong number of arguments for 'get' command\r\n"
+    );
     assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
 }
 

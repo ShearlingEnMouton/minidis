@@ -597,7 +597,8 @@ mod execute_tests {
         String::from_utf8(out).unwrap()
     }
 
-    const WRONGTYPE: &str = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    const WRONGTYPE: &str =
+        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
 
     #[test]
     fn ping_replies_pong_or_echoes_the_message() {
