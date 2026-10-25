@@ -140,7 +140,6 @@ cargo test
 | `src/logger/` | Log levels and output |
 | `src/limits.rs` | Protocol size limits |
 | `helm/minidis/` | Helm chart |
-| `docs/todo.md` | Roadmap |
 
 ## License
 
