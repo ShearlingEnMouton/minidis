@@ -369,3 +369,419 @@ impl Command {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(parts: &[&str]) -> Result<Command, CommandError> {
+        let args: Vec<Vec<u8>> = parts.iter().map(|p| p.as_bytes().to_vec()).collect();
+        Command::from_args(&args)
+    }
+
+    fn unix_now() -> Duration {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
+    }
+
+    fn set_ttl(parts: &[&str]) -> Option<Duration> {
+        match parse(parts).unwrap() {
+            Command::Set { ttl, .. } => ttl,
+            other => panic!("expected SET, got {other:?}"),
+        }
+    }
+
+    fn expire_ttl(parts: &[&str]) -> Duration {
+        match parse(parts).unwrap() {
+            Command::Expire { ttl, .. } => ttl,
+            other => panic!("expected an expire command, got {other:?}"),
+        }
+    }
+
+    fn is_del(parts: &[&str], key: &str) -> bool {
+        match parse(parts).unwrap() {
+            Command::Del { keys } => keys == vec![key.as_bytes().to_vec()],
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn set_without_options_has_no_ttl() {
+        assert_eq!(set_ttl(&["SET", "k", "v"]), None);
+    }
+
+    #[test]
+    fn set_ex_and_px_use_the_given_duration() {
+        assert_eq!(
+            set_ttl(&["SET", "k", "v", "EX", "10"]),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            set_ttl(&["SET", "k", "v", "PX", "1500"]),
+            Some(Duration::from_millis(1500))
+        );
+    }
+
+    #[test]
+    fn command_and_option_names_are_case_insensitive() {
+        assert_eq!(
+            set_ttl(&["set", "k", "v", "ex", "10"]),
+            Some(Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn set_exat_and_pxat_become_a_remaining_duration() {
+        let at_secs = (unix_now().as_secs() + 100).to_string();
+        let ttl = set_ttl(&["SET", "k", "v", "EXAT", at_secs.as_str()]).unwrap();
+        assert!(ttl > Duration::from_secs(97) && ttl <= Duration::from_secs(100));
+
+        let at_ms = (unix_now().as_millis() + 100_000).to_string();
+        let ttl = set_ttl(&["SET", "k", "v", "PXAT", at_ms.as_str()]).unwrap();
+        assert!(ttl > Duration::from_secs(97) && ttl <= Duration::from_secs(100));
+    }
+
+    #[test]
+    fn set_rejects_invalid_options() {
+        assert!(matches!(
+            parse(&["SET", "k", "v", "EX", "0"]),
+            Err(CommandError::InvalidExpire("set"))
+        ));
+        assert!(matches!(
+            parse(&["SET", "k", "v", "PX", "-5"]),
+            Err(CommandError::InvalidExpire("set"))
+        ));
+        assert!(matches!(
+            parse(&["SET", "k", "v", "EX", "abc"]),
+            Err(CommandError::NotAnInteger)
+        ));
+        assert!(matches!(
+            parse(&["SET", "k", "v", "FOO", "10"]),
+            Err(CommandError::SyntaxError)
+        ));
+        assert!(matches!(
+            parse(&["SET", "k", "v", "EX"]),
+            Err(CommandError::WrongArity("set"))
+        ));
+        assert!(matches!(
+            parse(&["SET", "k"]),
+            Err(CommandError::WrongArity("set"))
+        ));
+    }
+
+    #[test]
+    fn expire_and_pexpire_use_the_given_duration() {
+        assert_eq!(expire_ttl(&["EXPIRE", "k", "10"]), Duration::from_secs(10));
+        assert_eq!(
+            expire_ttl(&["PEXPIRE", "k", "1500"]),
+            Duration::from_millis(1500)
+        );
+    }
+
+    #[test]
+    fn non_positive_expire_becomes_del() {
+        assert!(is_del(&["EXPIRE", "k", "0"], "k"));
+        assert!(is_del(&["EXPIRE", "k", "-5"], "k"));
+        assert!(is_del(&["PEXPIRE", "k", "0"], "k"));
+    }
+
+    #[test]
+    fn expire_rejects_a_duration_that_overflows() {
+        assert!(matches!(
+            parse(&["EXPIRE", "k", "9223372036854775807"]),
+            Err(CommandError::InvalidExpire("expire"))
+        ));
+    }
+
+    #[test]
+    fn pexpireat_in_the_future_becomes_a_remaining_duration() {
+        let at_ms = (unix_now().as_millis() + 100_000).to_string();
+        let ttl = expire_ttl(&["PEXPIREAT", "k", at_ms.as_str()]);
+        assert!(ttl > Duration::from_secs(97) && ttl <= Duration::from_secs(100));
+    }
+
+    #[test]
+    fn pexpireat_in_the_past_becomes_del() {
+        assert!(is_del(&["PEXPIREAT", "k", "1000"], "k"));
+        assert!(is_del(&["PEXPIREAT", "k", "0"], "k"));
+        assert!(is_del(&["PEXPIREAT", "k", "-1"], "k"));
+    }
+
+    #[test]
+    fn rewriteaof_takes_no_arguments() {
+        assert!(matches!(parse(&["REWRITEAOF"]), Ok(Command::Rewriteaof)));
+        assert!(matches!(
+            parse(&["REWRITEAOF", "now"]),
+            Err(CommandError::WrongArity("rewriteaof"))
+        ));
+    }
+
+    #[test]
+    fn wrong_argument_counts_are_rejected() {
+        for parts in [
+            &["GET"][..],
+            &["GET", "a", "b"][..],
+            &["DEL"][..],
+            &["TTL"][..],
+            &["EXPIRE", "k"][..],
+            &["PEXPIREAT", "k"][..],
+            &["PERSIST"][..],
+            &["LPUSH", "k"][..],
+            &["DBSIZE", "x"][..],
+        ] {
+            assert!(
+                matches!(parse(parts), Err(CommandError::WrongArity(_))),
+                "{parts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_and_empty_commands_are_rejected() {
+        assert!(matches!(
+            parse(&["NOPE", "a"]),
+            Err(CommandError::UnknownCommand { .. })
+        ));
+        assert!(matches!(parse(&[]), Err(CommandError::WrongArity(_))));
+    }
+
+    #[test]
+    fn is_write_matches_the_commands_that_change_data() {
+        for parts in [
+            &["SET", "k", "v"][..],
+            &["DEL", "k"][..],
+            &["EXPIRE", "k", "10"][..],
+            &["PEXPIREAT", "k", "99999999999999"][..],
+            &["PERSIST", "k"][..],
+            &["LPUSH", "k", "x"][..],
+            &["RPOP", "k"][..],
+            &["HSET", "k", "f", "v"][..],
+            &["HDEL", "k", "f"][..],
+        ] {
+            assert!(parse(parts).unwrap().is_write(), "{parts:?}");
+        }
+        for parts in [
+            &["GET", "k"][..],
+            &["TTL", "k"][..],
+            &["LRANGE", "k", "0", "-1"][..],
+            &["HGETALL", "k"][..],
+            &["DBSIZE"][..],
+            &["REWRITEAOF"][..],
+        ] {
+            assert!(!parse(parts).unwrap().is_write(), "{parts:?}");
+        }
+    }
+
+    #[test]
+    fn rewriteaof_is_not_executed_by_the_store() {
+        let mut out = Vec::new();
+        Command::Rewriteaof.execute(&Store::new()).encode(&mut out);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "-ERR REWRITEAOF is handled by the AOF\r\n"
+        );
+    }
+}
+
+#[cfg(test)]
+mod execute_tests {
+    use super::*;
+
+    fn run(store: &Store, parts: &[&str]) -> String {
+        let args: Vec<Vec<u8>> = parts.iter().map(|p| p.as_bytes().to_vec()).collect();
+        let reply = match Command::from_args(&args) {
+            Ok(cmd) => cmd.execute(store),
+            Err(e) => Reply::from(e),
+        };
+        let mut out = Vec::new();
+        reply.encode(&mut out);
+        String::from_utf8(out).unwrap()
+    }
+
+    const WRONGTYPE: &str = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+    #[test]
+    fn ping_replies_pong_or_echoes_the_message() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["PING"]), "+PONG\r\n");
+        assert_eq!(run(&store, &["PING", "hi"]), "$2\r\nhi\r\n");
+    }
+
+    #[test]
+    fn get_and_set_replies() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["GET", "k"]), "$-1\r\n");
+        assert_eq!(run(&store, &["SET", "k", "v"]), "+OK\r\n");
+        assert_eq!(run(&store, &["GET", "k"]), "$1\r\nv\r\n");
+    }
+
+    #[test]
+    fn del_replies_with_the_number_of_removed_keys() {
+        let store = Store::new();
+        run(&store, &["SET", "a", "1"]);
+        run(&store, &["SET", "b", "2"]);
+        assert_eq!(run(&store, &["DEL", "a", "b", "missing"]), ":2\r\n");
+        assert_eq!(run(&store, &["DEL", "a"]), ":0\r\n");
+        assert_eq!(run(&store, &["DBSIZE"]), ":0\r\n");
+    }
+
+    #[test]
+    fn ttl_replies_for_missing_persistent_and_expiring_keys() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["TTL", "k"]), ":-2\r\n");
+        assert_eq!(run(&store, &["PTTL", "k"]), ":-2\r\n");
+
+        run(&store, &["SET", "k", "v"]);
+        assert_eq!(run(&store, &["TTL", "k"]), ":-1\r\n");
+        assert_eq!(run(&store, &["PTTL", "k"]), ":-1\r\n");
+
+        run(&store, &["EXPIRE", "k", "100"]);
+        assert_eq!(run(&store, &["TTL", "k"]), ":100\r\n");
+        let pttl = run(&store, &["PTTL", "k"]);
+        let ms: i64 = pttl.trim_start_matches(':').trim_end().parse().unwrap();
+        assert!((99_000..=100_000).contains(&ms), "pttl was {ms}");
+    }
+
+    #[test]
+    fn expire_and_persist_reply_one_when_they_change_something() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["EXPIRE", "k", "10"]), ":0\r\n");
+        assert_eq!(run(&store, &["PERSIST", "k"]), ":0\r\n");
+
+        run(&store, &["SET", "k", "v"]);
+        assert_eq!(run(&store, &["PERSIST", "k"]), ":0\r\n");
+        assert_eq!(run(&store, &["EXPIRE", "k", "10"]), ":1\r\n");
+        assert_eq!(run(&store, &["PERSIST", "k"]), ":1\r\n");
+        assert_eq!(run(&store, &["TTL", "k"]), ":-1\r\n");
+    }
+
+    #[test]
+    fn expire_with_a_non_positive_time_deletes_the_key() {
+        let store = Store::new();
+        run(&store, &["SET", "k", "v"]);
+        assert_eq!(run(&store, &["EXPIRE", "k", "0"]), ":1\r\n");
+        assert_eq!(run(&store, &["GET", "k"]), "$-1\r\n");
+    }
+
+    #[test]
+    fn list_replies() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["LLEN", "l"]), ":0\r\n");
+        assert_eq!(run(&store, &["LPOP", "l"]), "$-1\r\n");
+        assert_eq!(run(&store, &["RPUSH", "l", "a", "b", "c"]), ":3\r\n");
+        assert_eq!(run(&store, &["LPUSH", "l", "z"]), ":4\r\n");
+        assert_eq!(run(&store, &["LLEN", "l"]), ":4\r\n");
+        assert_eq!(run(&store, &["LPOP", "l"]), "$1\r\nz\r\n");
+        assert_eq!(run(&store, &["RPOP", "l"]), "$1\r\nc\r\n");
+    }
+
+    #[test]
+    fn lrange_handles_negative_and_out_of_range_indexes() {
+        let store = Store::new();
+        run(&store, &["RPUSH", "l", "a", "b", "c"]);
+        let abc = "*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
+        assert_eq!(run(&store, &["LRANGE", "l", "0", "-1"]), abc);
+        assert_eq!(run(&store, &["LRANGE", "l", "-100", "100"]), abc);
+        assert_eq!(run(&store, &["LRANGE", "l", "1", "1"]), "*1\r\n$1\r\nb\r\n");
+        assert_eq!(
+            run(&store, &["LRANGE", "l", "-2", "-1"]),
+            "*2\r\n$1\r\nb\r\n$1\r\nc\r\n"
+        );
+        assert_eq!(run(&store, &["LRANGE", "l", "5", "10"]), "*0\r\n");
+        assert_eq!(run(&store, &["LRANGE", "l", "2", "0"]), "*0\r\n");
+        assert_eq!(run(&store, &["LRANGE", "missing", "0", "-1"]), "*0\r\n");
+    }
+
+    #[test]
+    fn lrange_rejects_non_integer_indexes() {
+        let store = Store::new();
+        assert_eq!(
+            run(&store, &["LRANGE", "l", "a", "1"]),
+            "-ERR value is not an integer or out of range\r\n"
+        );
+    }
+
+    #[test]
+    fn hash_replies() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["HGETALL", "h"]), "*0\r\n");
+        assert_eq!(run(&store, &["HGET", "h", "f"]), "$-1\r\n");
+        assert_eq!(run(&store, &["HLEN", "h"]), ":0\r\n");
+        assert_eq!(run(&store, &["HEXISTS", "h", "f"]), ":0\r\n");
+
+        assert_eq!(run(&store, &["HSET", "h", "f", "v"]), ":1\r\n");
+        assert_eq!(run(&store, &["HSET", "h", "f", "w", "g", "x"]), ":1\r\n");
+        assert_eq!(run(&store, &["HGET", "h", "f"]), "$1\r\nw\r\n");
+        assert_eq!(run(&store, &["HLEN", "h"]), ":2\r\n");
+        assert_eq!(run(&store, &["HEXISTS", "h", "f"]), ":1\r\n");
+        assert_eq!(run(&store, &["HDEL", "h", "f", "nope"]), ":1\r\n");
+        assert_eq!(
+            run(&store, &["HGETALL", "h"]),
+            "*2\r\n$1\r\ng\r\n$1\r\nx\r\n"
+        );
+    }
+
+    #[test]
+    fn type_reply_names_each_kind() {
+        let store = Store::new();
+        run(&store, &["SET", "s", "v"]);
+        run(&store, &["RPUSH", "l", "a"]);
+        run(&store, &["HSET", "h", "f", "v"]);
+        assert_eq!(run(&store, &["TYPE", "s"]), "+string\r\n");
+        assert_eq!(run(&store, &["TYPE", "l"]), "+list\r\n");
+        assert_eq!(run(&store, &["TYPE", "h"]), "+hash\r\n");
+        assert_eq!(run(&store, &["TYPE", "nope"]), "+none\r\n");
+    }
+
+    #[test]
+    fn using_the_wrong_type_replies_wrongtype() {
+        let store = Store::new();
+        run(&store, &["SET", "s", "v"]);
+        run(&store, &["RPUSH", "l", "a"]);
+        run(&store, &["HSET", "h", "f", "v"]);
+        for parts in [
+            &["LPUSH", "s", "x"][..],
+            &["LLEN", "s"][..],
+            &["HSET", "s", "f", "v"][..],
+            &["HGETALL", "l"][..],
+            &["GET", "l"][..],
+            &["GET", "h"][..],
+            &["RPOP", "h"][..],
+        ] {
+            assert_eq!(run(&store, parts), WRONGTYPE, "{parts:?}");
+        }
+    }
+
+    #[test]
+    fn error_replies_match_redis_wording() {
+        let store = Store::new();
+        assert_eq!(
+            run(&store, &["GET"]),
+            "-ERR wrong number of arguments for 'get' command\r\n"
+        );
+        assert_eq!(
+            run(&store, &["SET", "k", "v", "FOO", "1"]),
+            "-ERR syntax error\r\n"
+        );
+        assert_eq!(
+            run(&store, &["SET", "k", "v", "EX", "0"]),
+            "-ERR invalid expire time in 'set' command\r\n"
+        );
+        assert_eq!(
+            run(&store, &["SET", "k", "v", "EX", "x"]),
+            "-ERR value is not an integer or out of range\r\n"
+        );
+        assert_eq!(
+            run(&store, &["NOPE", "a"]),
+            "-ERR unknown command 'NOPE', with args beginning with: 'a' \r\n"
+        );
+    }
+
+    #[test]
+    fn dbsize_counts_every_kind_of_key() {
+        let store = Store::new();
+        run(&store, &["SET", "s", "v"]);
+        run(&store, &["RPUSH", "l", "a"]);
+        run(&store, &["HSET", "h", "f", "v"]);
+        assert_eq!(run(&store, &["DBSIZE"]), ":3\r\n");
+    }
+}
