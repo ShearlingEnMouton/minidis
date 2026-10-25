@@ -1,15 +1,16 @@
 use std::{
     fs,
     io::{Read, Write},
-    net::{TcpListener, TcpStream},
+    net::TcpStream,
     path::PathBuf,
     process::{Child, Command, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicU16, AtomicUsize, Ordering},
     thread::sleep,
     time::{Duration, Instant},
 };
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+static PORT: AtomicU16 = AtomicU16::new(20000);
 
 const SET_A: &[u8] = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n";
 
@@ -57,11 +58,7 @@ impl Server {
     }
 
     fn spawn_with_env(aof: &PathBuf, fsync: &str, extra: &[(&str, &str)]) -> Server {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = PORT.fetch_add(1, Ordering::SeqCst);
         let child = Command::new(env!("CARGO_BIN_EXE_minidis"))
             .env("BIND_ADDR", "127.0.0.1")
             .env("EXPOSE_PORT", port.to_string())
@@ -79,8 +76,16 @@ impl Server {
     fn wait_until_ready(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
+            match self.child.try_wait() {
+                Ok(None) => {
+                    if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
+                        return;
+                    }
+                }
+                Ok(Some(status)) => {
+                    panic!("server exited before listening: {status}");
+                }
+                Err(e) => panic!("couldn't check the server: {e}"),
             }
             sleep(Duration::from_millis(50));
         }
