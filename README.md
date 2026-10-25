@@ -8,6 +8,7 @@ What it does:
 - Expires keys after a TTL (checked on access, plus a background cleanup)
 - Saves writes to an append-only file (AOF) and replays it on startup
 - Ships as a Docker image and a Helm chart on GitHub Container Registry (GHCR)
+- Comes in two builds: the full build (default) and a minimal lite build. See [Lite build](#lite-build)
 
 ## Supported commands
 
@@ -27,6 +28,20 @@ Not supported:
 
 - Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, and the count argument of `LPOP`/`RPOP`
 - Authentication, replication, pub/sub, transactions, and multiple databases
+
+## Lite build
+
+The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`. Every other command is rejected as an unknown command.
+
+The list, hash and expiry code is removed at compile time, not filtered at runtime. It is behind the Cargo feature `full`, which is on by default. The lite build turns the feature off:
+
+```sh
+cargo build --release --no-default-features
+```
+
+The lite build keeps AOF persistence, so data survives a restart and a volume is still needed. It has no background cleanup, so `PURGE_LIMIT` and `PURGE_INTERVAL` are ignored. It also has no `REWRITEAOF`, so its AOF is never compacted.
+
+The lite build loads an AOF written by the full build only if every record is a `SET` without expiry or a `DEL`. Otherwise startup fails with an error that names the unsupported command, and the file is left untouched. Switching from the full build to the lite build therefore requires an empty AOF or a new volume. Switching from the lite build to the full build always works.
 
 ## Quick start
 
@@ -54,12 +69,12 @@ All settings are environment variables.
 | `BIND_ADDR` | `0.0.0.0` | Address to listen on |
 | `EXPOSE_PORT` | `3131` | Port to listen on |
 | `LOG_LEVEL` | `INFO` | One of `ERR`, `WARN`, `INFO`, `DEBUG`. Other values fall back to `INFO` |
-| `PURGE_LIMIT` | `1000` | Most expired keys the background cleanup removes in one pass. Must be greater than 0 |
-| `PURGE_INTERVAL` | `100` | Milliseconds between cleanup passes. Must be greater than 0 |
+| `PURGE_LIMIT` | `1000` | Most expired keys the background cleanup removes in one pass. Must be greater than 0. Full build only |
+| `PURGE_INTERVAL` | `100` | Milliseconds between cleanup passes. Must be greater than 0. Full build only |
 | `AOF_PATH` | `/data/appendonly.aof` | Location of the append-only file |
 | `AOF_FSYNC` | `everysec` | `always`, `everysec` or `no`. See [Persistence](#persistence-aof) |
 
-The server exits at startup if `PURGE_LIMIT`, `PURGE_INTERVAL` or `AOF_FSYNC` has an invalid value.
+The server exits at startup if `AOF_FSYNC` has an invalid value, and in the full build also if `PURGE_LIMIT` or `PURGE_INTERVAL` has one.
 
 ## Persistence (AOF)
 
@@ -91,6 +106,12 @@ docker run -d -p 3131:3131 -v minidis-data:/data ghcr.io/shearlingenmouton/minid
 
 Without a volume, the data is lost when the container is removed.
 
+The lite build is published under the same name with a `-lite` suffix on the tag, for example `ghcr.io/shearlingenmouton/minidis:<version>-lite`. To build it locally, pass the Cargo flag as a build argument:
+
+```sh
+docker build --build-arg CARGO_FLAGS=--no-default-features -t minidis:lite .
+```
+
 ## Kubernetes (Helm)
 
 The chart is published as an OCI artifact:
@@ -105,21 +126,24 @@ Main values:
 | Value | Default | Description |
 | --- | --- | --- |
 | `image.repository` | `ghcr.io/shearlingenmouton/minidis` | Image to run |
-| `image.tag` | chart `appVersion` | Image tag |
+| `image.tag` | chart `appVersion` | Image tag. When set, it is used as is and `variant` adds no suffix |
+| `variant` | `full` | `full` or `lite`. `lite` selects the image tag `<appVersion>-lite`. Any other value makes the chart fail to render |
 | `logLevel` | `INFO` | Sets `LOG_LEVEL` |
-| `purge.limit` | `1000` | Sets `PURGE_LIMIT` |
-| `purge.interval` | `100` | Sets `PURGE_INTERVAL` |
+| `purge.limit` | `1000` | Sets `PURGE_LIMIT`. Not set when `variant` is `lite` |
+| `purge.interval` | `100` | Sets `PURGE_INTERVAL`. Not set when `variant` is `lite` |
 | `aof.path` | `/data/appendonly.aof` | Sets `AOF_PATH` |
 | `aof.fsync` | `everysec` | Sets `AOF_FSYNC` |
 | `pvc.storage` | `2Gi` | Size of the volume that holds the AOF |
 
 The chart creates a `ReadWriteOnce` PersistentVolumeClaim mounted at `/data`. The claim has the `helm.sh/resource-policy: keep` annotation, so `helm uninstall` does not delete the data. The Deployment uses the `Recreate` strategy and runs one replica. minidis is a single-node server and must not be scaled beyond one replica.
 
+Because the claim is kept, changing `variant` from `full` to `lite` on an existing release reuses the old AOF. If that file holds commands the lite build does not support, the pod fails to start until the AOF is emptied or a new volume is used. See [Lite build](#lite-build).
+
 ## Releases
 
-Pushing a tag like `v0.2.0` or `v0.2.0-rc.1` runs the release workflow, which:
+Pushing a tag like `v0.3.0` or `v0.3.0-rc.1` runs the release workflow, which:
 
-1. Builds the image and pushes it to GHCR, tagged without the leading `v` (`0.2.0`)
+1. Builds the full and lite images from the same tag and pushes them to GHCR, tagged without the leading `v` (`0.3.0` and `0.3.0-lite`). `latest` is only ever given to the full image
 2. Packages the Helm chart with the same version and pushes it to GHCR
 3. Creates a GitHub Release, marked as a pre-release if the tag contains `-`
 
@@ -130,13 +154,22 @@ cargo build
 cargo test
 ```
 
+The lite build is checked with the same commands and `--no-default-features`:
+
+```sh
+cargo clippy --no-default-features --all-targets
+cargo test --no-default-features
+```
+
+Tests that use lists, hashes or expiry only run in the full build, and tests for the lite behavior only run in the lite build.
+
 The repository ships a `pre-push` Git hook that runs `cargo fmt --check` and rejects the push if formatting differs. Enable it once per clone:
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
-The CI workflow runs `cargo fmt --check`, `cargo clippy` and `cargo test` on every push to `main` and on pull requests.
+The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests.
 
 | Path | Contents |
 | --- | --- |
