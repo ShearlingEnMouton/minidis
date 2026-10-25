@@ -130,6 +130,14 @@ cargo build
 cargo test
 ```
 
+The repository ships a `pre-push` Git hook that runs `cargo fmt --check` and rejects the push if formatting differs. Enable it once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+The CI workflow runs `cargo fmt --check`, `cargo clippy` and `cargo test` on every push to `main` and on pull requests.
+
 | Path | Contents |
 | --- | --- |
 | `src/main.rs` | Startup, environment settings, client connections |
@@ -140,6 +148,8 @@ cargo test
 | `src/logger/` | Log levels and output |
 | `src/limits.rs` | Protocol size limits |
 | `helm/minidis/` | Helm chart |
+| `.githooks/` | Git hooks |
+| `.github/workflows/` | CI and release workflows |
 
 ## License
 
