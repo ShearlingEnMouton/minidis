@@ -130,6 +130,7 @@ fn send_raw(stream: &mut TcpStream, bytes: &[u8], reply_len: usize) -> String {
     String::from_utf8(reply).unwrap()
 }
 
+#[cfg(feature = "full")]
 fn integer(reply: &str) -> i64 {
     reply
         .strip_prefix(':')
@@ -139,6 +140,7 @@ fn integer(reply: &str) -> i64 {
         .unwrap()
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn data_survives_a_restart() {
     let dir = TempDir::new();
@@ -164,6 +166,7 @@ fn data_survives_a_restart() {
     assert!((90..=100).contains(&ttl), "ttl was {ttl}");
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn expired_key_is_not_restored() {
     let dir = TempDir::new();
@@ -181,6 +184,7 @@ fn expired_key_is_not_restored() {
     assert_eq!(send(&mut c, &["DBSIZE"]), ":1\r\n");
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn rewriteaof_shrinks_the_file_and_keeps_the_data() {
     let dir = TempDir::new();
@@ -215,6 +219,7 @@ fn an_incomplete_tail_is_truncated_on_start() {
     let mut c = server.connect();
 
     assert_eq!(send(&mut c, &["GET", "a"]), "$1\r\n1\r\n");
+    #[cfg(feature = "full")]
     assert_eq!(send(&mut c, &["DBSIZE"]), ":1\r\n");
     assert_eq!(fs::metadata(dir.aof()).unwrap().len(), SET_A.len() as u64);
 }
@@ -253,6 +258,7 @@ fn an_invalid_fsync_policy_stops_the_server_from_starting() {
     }
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn pipelined_commands_are_answered_in_order() {
     let dir = TempDir::new();
@@ -330,6 +336,7 @@ fn writes_from_many_clients_are_all_restored() {
 
     let server = Server::start(&dir.aof());
     let mut c = server.connect();
+    #[cfg(feature = "full")]
     assert_eq!(send(&mut c, &["DBSIZE"]), ":100\r\n");
     assert_eq!(send(&mut c, &["GET", "k-3-24"]), "$1\r\nv\r\n");
 }
@@ -341,6 +348,7 @@ fn data_survives_a_restart_under_every_fsync_policy() {
         let mut server = Server::start_with(&dir.aof(), policy);
         let mut c = server.connect();
         assert_eq!(send(&mut c, &["SET", "a", "1"]), "+OK\r\n", "{policy}");
+        #[cfg(feature = "full")]
         assert_eq!(send(&mut c, &["RPUSH", "l", "x"]), ":1\r\n", "{policy}");
         drop(c);
         server.kill();
@@ -348,6 +356,7 @@ fn data_survives_a_restart_under_every_fsync_policy() {
         let server = Server::start_with(&dir.aof(), policy);
         let mut c = server.connect();
         assert_eq!(send(&mut c, &["GET", "a"]), "$1\r\n1\r\n", "{policy}");
+        #[cfg(feature = "full")]
         assert_eq!(send(&mut c, &["LLEN", "l"]), ":1\r\n", "{policy}");
     }
 }
@@ -360,6 +369,7 @@ fn the_fsync_policy_name_is_case_insensitive() {
     assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn invalid_purge_settings_stop_the_server_from_starting() {
     for (name, value) in [
@@ -381,4 +391,72 @@ fn invalid_purge_settings_stop_the_server_from_starting() {
             sleep(Duration::from_millis(50));
         }
     }
+}
+
+#[cfg(not(feature = "full"))]
+#[test]
+fn lite_data_survives_a_restart() {
+    let dir = TempDir::new();
+    let mut server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    assert_eq!(send(&mut c, &["SET", "a", "1"]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["SET", "b", "2"]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["DEL", "a"]), ":1\r\n");
+    drop(c);
+    server.kill();
+
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    assert_eq!(send(&mut c, &["GET", "a"]), "$-1\r\n");
+    assert_eq!(send(&mut c, &["GET", "b"]), "$1\r\n2\r\n");
+}
+
+#[cfg(not(feature = "full"))]
+#[test]
+fn lite_rejects_full_only_commands() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    for parts in [
+        &["TTL", "k"][..],
+        &["EXPIRE", "k", "10"][..],
+        &["LPUSH", "l", "x"][..],
+        &["HSET", "h", "f", "v"][..],
+        &["TYPE", "k"][..],
+        &["DBSIZE"][..],
+        &["REWRITEAOF"][..],
+    ] {
+        let reply = send(&mut c, parts);
+        assert!(
+            reply.starts_with("-ERR unknown command"),
+            "{parts:?}: {reply:?}"
+        );
+    }
+    assert_eq!(
+        send(&mut c, &["SET", "k", "v", "EX", "10"]),
+        "-ERR wrong number of arguments for 'set' command\r\n"
+    );
+    assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
+}
+
+#[cfg(not(feature = "full"))]
+#[test]
+fn lite_refuses_an_aof_written_by_the_full_build() {
+    let dir = TempDir::new();
+    let rpush = b"*3\r\n$5\r\nRPUSH\r\n$1\r\nl\r\n$1\r\nx\r\n";
+    fs::write(dir.aof(), [SET_A, &rpush[..]].concat()).unwrap();
+    let before = fs::read(dir.aof()).unwrap();
+
+    let mut server = Server::spawn(&dir.aof(), "always");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        assert!(Instant::now() < deadline, "server kept running");
+        sleep(Duration::from_millis(50));
+    }
+    assert_eq!(fs::read(dir.aof()).unwrap(), before);
 }

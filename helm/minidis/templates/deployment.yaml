@@ -28,7 +28,7 @@ spec:
 {{- end }}
       containers:
       - name: {{ include "minidisservice.name" . }}
-        image: {{ .Values.image.repository }}:{{ .Values.image.tag | default (printf "%s" .Chart.AppVersion) }}
+        image: {{ .Values.image.repository }}:{{ include "minidisservice.imageTag" . }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         ports:
         - containerPort: {{ .Values.port }}
