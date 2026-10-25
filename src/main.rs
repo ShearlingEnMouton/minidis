@@ -36,8 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy = parse_fsync_policy(&env_or("AOF_FSYNC", "everysec"))?;
 
     let addr = format!("{}:{}", bind_addr, port);
-    let listener = TcpListener::bind(addr.clone()).await?;
-    log_info!("Listening on: {}", addr);
+    let listener = TcpListener::bind(addr).await?;
+    let bind_addr = listener.local_addr()?;
+    log_info!("Listening on: {bind_addr}");
 
     let store = Store::new();
     let aof = Aof::open(&aof_path, policy)?;
