@@ -1,5 +1,7 @@
 # minidis
 
+[![codecov](https://codecov.io/gh/ShearlingEnMouton/minidis/graph/badge.svg)](https://codecov.io/gh/ShearlingEnMouton/minidis)
+
 minidis is a small Redis-compatible server written in Rust. It speaks RESP2 over TCP, so `redis-cli` and most Redis client libraries can connect to it. It is a learning project and implements a limited set of Redis commands, not all of them.
 
 What it does:
@@ -197,7 +199,7 @@ The repository ships a `pre-push` Git hook that runs `cargo fmt --check` and rej
 git config core.hooksPath .githooks
 ```
 
-The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. A separate job measures coverage for both builds, shows the summary on the workflow run page, and uploads the `lcov.info` report as an artifact. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
+The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. A separate job measures coverage for both builds, shows the summary on the workflow run page, uploads the `lcov.info` report as an artifact, and sends it to [Codecov](https://codecov.io/gh/ShearlingEnMouton/minidis) using GitHub OIDC, so no upload token is stored in the repository. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
 
 | Path | Contents |
 | --- | --- |
