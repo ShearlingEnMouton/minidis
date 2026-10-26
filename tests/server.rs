@@ -100,7 +100,20 @@ impl Server {
         stream
     }
 
-    fn kill(&mut self) {
+    fn stop(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            let _ = Command::new("kill")
+                .arg("-TERM")
+                .arg(self.child.id().to_string())
+                .status();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while let Ok(None) = self.child.try_wait() {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                sleep(Duration::from_millis(20));
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -128,7 +141,7 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.kill();
+        self.stop();
     }
 }
 
@@ -176,7 +189,7 @@ fn data_survives_a_restart() {
     assert_eq!(send(&mut c, &["HSET", "h", "f", "v"]), ":1\r\n");
     assert_eq!(send(&mut c, &["SET", "t", "v", "EX", "100"]), "+OK\r\n");
     drop(c);
-    server.kill();
+    server.stop();
 
     let server = Server::start(&dir.aof());
     let mut c = server.connect();
@@ -201,7 +214,7 @@ fn expired_key_is_not_restored() {
     assert_eq!(send(&mut c, &["SET", "keep", "v"]), "+OK\r\n");
     sleep(Duration::from_millis(500));
     drop(c);
-    server.kill();
+    server.stop();
 
     let server = Server::start(&dir.aof());
     let mut c = server.connect();
@@ -226,7 +239,7 @@ fn rewriteaof_shrinks_the_file_and_keeps_the_data() {
     assert!(after < before, "{after} >= {before}");
     assert_eq!(send(&mut c, &["SET", "b", "after"]), "+OK\r\n");
     drop(c);
-    server.kill();
+    server.stop();
 
     let server = Server::start(&dir.aof());
     let mut c = server.connect();
@@ -357,7 +370,7 @@ fn writes_from_many_clients_are_all_restored() {
     for worker in workers {
         worker.join().unwrap();
     }
-    server.kill();
+    server.stop();
 
     let server = Server::start(&dir.aof());
     let mut c = server.connect();
@@ -376,7 +389,7 @@ fn data_survives_a_restart_under_every_fsync_policy() {
         #[cfg(feature = "full")]
         assert_eq!(send(&mut c, &["RPUSH", "l", "x"]), ":1\r\n", "{policy}");
         drop(c);
-        server.kill();
+        server.stop();
 
         let server = Server::start_with(&dir.aof(), policy);
         let mut c = server.connect();
@@ -428,7 +441,7 @@ fn lite_data_survives_a_restart() {
     assert_eq!(send(&mut c, &["SET", "b", "2"]), "+OK\r\n");
     assert_eq!(send(&mut c, &["DEL", "a"]), ":1\r\n");
     drop(c);
-    server.kill();
+    server.stop();
 
     let server = Server::start(&dir.aof());
     let mut c = server.connect();
