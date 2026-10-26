@@ -73,8 +73,9 @@ All settings are environment variables.
 | `PURGE_INTERVAL` | `100` | Milliseconds between cleanup passes. Must be greater than 0. Full build only |
 | `AOF_PATH` | `/data/appendonly.aof` | Location of the append-only file |
 | `AOF_FSYNC` | `everysec` | `always`, `everysec` or `no`. See [Persistence](#persistence-aof) |
+| `SHUTDOWN_TIMEOUT` | `10` | Seconds to wait for open client connections when shutting down. Must be greater than 0. See [Shutdown](#shutdown) |
 
-The server exits at startup if `AOF_FSYNC` has an invalid value, and in the full build also if `PURGE_LIMIT` or `PURGE_INTERVAL` has one.
+The server exits at startup if `AOF_FSYNC` or `SHUTDOWN_TIMEOUT` has an invalid value, and in the full build also if `PURGE_LIMIT` or `PURGE_INTERVAL` has one.
 
 ## Persistence (AOF)
 
@@ -93,6 +94,18 @@ Every write command that succeeds is appended to the AOF in RESP format. Reads a
 | `no` | Leave flushing to the operating system. Fastest |
 
 **Compaction.** `REWRITEAOF` shrinks the file. It writes the current data as the shortest list of commands (`SET`, `RPUSH`, `HSET`, plus `PXAT`/`PEXPIREAT` for keys with a TTL) to a temporary file, then renames it over the old one. If anything fails, the old file stays untouched. Writes are blocked while it runs, and it only runs when `REWRITEAOF` is called. There is no automatic trigger yet.
+
+## Shutdown
+
+On `SIGTERM` or `SIGINT` the server shuts down in order:
+
+1. It stops accepting new connections.
+2. Idle connections are closed. A command that was already received is executed and answered first.
+3. The background cleanup stops.
+4. It waits up to `SHUTDOWN_TIMEOUT` seconds for the remaining connections to finish. Connections still open after that are closed without a reply.
+5. The AOF is flushed to disk, and the process exits with status 0.
+
+The signal handlers are installed before the AOF is replayed, so a signal received during a long replay is handled once the replay is done.
 
 ## Docker
 
@@ -133,6 +146,8 @@ Main values:
 | `purge.interval` | `100` | Sets `PURGE_INTERVAL`. Not set when `variant` is `lite` |
 | `aof.path` | `/data/appendonly.aof` | Sets `AOF_PATH` |
 | `aof.fsync` | `everysec` | Sets `AOF_FSYNC` |
+| `shutdown.timeout` | `10` | Sets `SHUTDOWN_TIMEOUT` |
+| `terminationGracePeriodSeconds` | `30` | Time Kubernetes waits before killing the pod. It is counted from the start of the `preStop` hook (`lifecycle.preStop.sleep.seconds`, 15 by default), so it must be larger than that sleep plus `shutdown.timeout` |
 | `pvc.storage` | `2Gi` | Size of the volume that holds the AOF |
 
 The chart creates a `ReadWriteOnce` PersistentVolumeClaim mounted at `/data`. The claim has the `helm.sh/resource-policy: keep` annotation, so `helm uninstall` does not delete the data. The Deployment uses the `Recreate` strategy and runs one replica. minidis is a single-node server and must not be scaled beyond one replica.
