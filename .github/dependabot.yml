@@ -6,6 +6,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: chore
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -13,3 +17,6 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
