@@ -33,3 +33,38 @@ jobs:
 
       - name: Test (lite)
         run: cargo test --no-default-features
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup update stable
+          rustup component add llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Measure coverage (full and lite)
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --no-report
+          cargo llvm-cov --no-report --no-default-features
+          cargo llvm-cov report --lcov --output-path lcov.info
+
+      - name: Coverage summary
+        run: |
+          {
+            echo '## Coverage'
+            echo '```'
+            cargo llvm-cov report
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
