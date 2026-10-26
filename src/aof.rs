@@ -276,6 +276,10 @@ impl Aof {
             }
         });
     }
+
+    pub fn fsync_before_shutdown(&self) -> io::Result<()> {
+        self.file.lock().unwrap().sync_data()
+    }
 }
 
 #[cfg(test)]

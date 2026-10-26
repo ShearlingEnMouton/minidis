@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::atomic::{AtomicU16, AtomicUsize, Ordering},
     thread::sleep,
     time::{Duration, Instant},
@@ -103,6 +103,26 @@ impl Server {
     fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    fn signal(&self, name: &str) {
+        let status = Command::new("kill")
+            .arg(format!("-{name}"))
+            .arg(self.child.id().to_string())
+            .status()
+            .unwrap();
+        assert!(status.success(), "kill -{name} failed");
+    }
+
+    fn wait_for_exit(&mut self, limit: Duration) -> ExitStatus {
+        let deadline = Instant::now() + limit;
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "server kept running");
+            sleep(Duration::from_millis(50));
+        }
     }
 }
 
@@ -464,4 +484,26 @@ fn lite_refuses_an_aof_written_by_the_full_build() {
         sleep(Duration::from_millis(50));
     }
     assert_eq!(fs::read(dir.aof()).unwrap(), before);
+}
+
+#[test]
+fn a_shutdown_signal_stops_the_server_cleanly_and_keeps_the_data() {
+    for signal in ["TERM", "INT"] {
+        let dir = TempDir::new();
+        let mut server = Server::start(&dir.aof());
+        let mut c = server.connect();
+        assert_eq!(send(&mut c, &["SET", "a", "1"]), "+OK\r\n", "SIG{signal}");
+
+        server.signal(signal);
+        let status = server.wait_for_exit(Duration::from_secs(5));
+        assert!(status.success(), "SIG{signal}: {status}");
+
+        let mut rest = Vec::new();
+        assert_eq!(c.read_to_end(&mut rest).unwrap(), 0, "SIG{signal}");
+        drop(c);
+
+        let server = Server::start(&dir.aof());
+        let mut c = server.connect();
+        assert_eq!(send(&mut c, &["GET", "a"]), "$1\r\n1\r\n", "SIG{signal}");
+    }
 }

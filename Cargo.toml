@@ -11,3 +11,4 @@ full = []
 [dependencies]
 chrono = "0.4.45"
 tokio = { version = "1.54.1", features = ["full"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }

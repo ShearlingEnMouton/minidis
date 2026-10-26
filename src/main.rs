@@ -1,12 +1,11 @@
-use std::net::SocketAddr;
-
-#[cfg(feature = "full")]
-use std::time::Duration;
-
+use std::{net::SocketAddr, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    signal::unix::{Signal, SignalKind, signal},
+    time::timeout,
 };
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[cfg(feature = "full")]
 use tokio::{
@@ -34,11 +33,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let purge_int = env_positive_u64("PURGE_INTERVAL", 100)?;
     let aof_path = env_or("AOF_PATH", "/data/appendonly.aof");
     let policy = parse_fsync_policy(&env_or("AOF_FSYNC", "everysec"))?;
+    let shutdown_timeout = Duration::from_secs(env_positive_u64("SHUTDOWN_TIMEOUT", 10)?);
 
     let addr = format!("{}:{}", bind_addr, port);
     let listener = TcpListener::bind(addr).await?;
     let bind_addr = listener.local_addr()?;
     log_info!("Listening on: {bind_addr}");
+
+    let sigint = signal(SignalKind::interrupt())?;
+    let sigterm = signal(SignalKind::terminate())?;
+    let cancellation_token = CancellationToken::new();
+    tokio::spawn(shutdown_signal(sigint, sigterm, cancellation_token.clone()));
 
     let store = Store::new();
     let aof = Aof::open(&aof_path, policy)?;
@@ -51,11 +56,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "full")]
     let reaper_store = store.clone();
     #[cfg(feature = "full")]
+    let reaper_token = cancellation_token.clone();
+    #[cfg(feature = "full")]
     task::spawn(async move {
         let mut purge_interval = interval(Duration::from_millis(purge_int));
         purge_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
+            if reaper_token.is_cancelled() {
+                break;
+            }
             let purged = reaper_store.purge_expired(purge_limit);
             if purged > 0 {
                 log_debug!("{purged} expired data have been purged.");
@@ -64,27 +74,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 task::yield_now().await;
                 continue;
             }
-            purge_interval.tick().await;
+
+            tokio::select! {
+                _ = purge_interval.tick() => {},
+                _ = reaper_token.cancelled() => break,
+            }
         }
     });
 
+    let tracker = TaskTracker::new();
+    let listener_token = cancellation_token.clone();
     loop {
-        let (socket, peer_addr) = listener.accept().await?;
-        let store = store.clone();
-        let aof = aof.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(socket, peer_addr, &store, &aof).await {
-                log_err!("Error handling client {}: {:?}", peer_addr, e);
+        tokio::select! {
+            _ = listener_token.cancelled() => {
+                drop(listener);
+                break
+            },
+            res = listener.accept() => {
+                let (socket, peer_addr) = res?;
+                let store = store.clone();
+                let aof = aof.clone();
+                let client_token = cancellation_token.clone();
+                tracker.spawn(async move {
+                    if let Err(e) = handle_client(socket, peer_addr, &store, &aof, &client_token).await {
+                        log_err!("Error handling client {}: {:?}", peer_addr, e);
+                    }
+                });
             }
-        });
+        }
     }
+
+    tracker.close();
+
+    if timeout(shutdown_timeout, tracker.wait()).await.is_err() {
+        log_warn!(
+            "Shutdown timed out after {:?} with {} client connection(s) still open, exiting anyway",
+            shutdown_timeout,
+            tracker.len()
+        );
+    }
+    aof.fsync_before_shutdown()?;
+
+    Ok(())
+}
+
+async fn shutdown_signal(mut sigint: Signal, mut sigterm: Signal, token: CancellationToken) {
+    tokio::select! {
+        _ = sigint.recv() => {
+            log_info!("Received SIGINT (Ctrl+C), starting shutdown...");
+        }
+        _ = sigterm.recv() => {
+            log_info!("Received SIGTERM (Termination), starting shutdown...");
+        }
+    }
+    token.cancel();
 }
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
-#[cfg(feature = "full")]
 fn env_positive_u64(name: &str, default: u64) -> Result<u64, String> {
     match std::env::var(name) {
         Err(_) => Ok(default),
@@ -134,12 +183,15 @@ async fn handle_client(
     peer_addr: SocketAddr,
     store: &Store,
     aof: &Aof,
+    cancellation_token: &CancellationToken,
 ) -> tokio::io::Result<()> {
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut seen_data = false;
-
     loop {
-        let bytes_read = stream.read_buf(&mut buffer).await?;
+        let bytes_read = tokio::select! {
+            res = stream.read_buf(&mut buffer) => res?,
+            _ = cancellation_token.cancelled() => return Ok(()),
+        };
 
         if bytes_read == 0 {
             if seen_data {

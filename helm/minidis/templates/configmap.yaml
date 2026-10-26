@@ -8,6 +8,7 @@ data:
   EXPOSE_PORT: {{ .Values.port | quote }}
   BIND_ADDR: {{ .Values.bindAddress | quote }}
   LOG_LEVEL: {{ .Values.logLevel | quote }}
+  SHUTDOWN_TIMEOUT: {{ .Values.shutdown.timeout | quote }}
   AOF_PATH: {{ .Values.aof.path | quote }}
   AOF_FSYNC: {{ .Values.aof.fsync | quote }}
 {{- if eq .Values.variant "full" }}
