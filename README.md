@@ -164,6 +164,8 @@ Pushing a tag like `v0.3.0` or `v0.3.0-rc.1` runs the release workflow, which:
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and commit conventions and the checks a change must pass.
+
 ```sh
 cargo build
 cargo test
@@ -178,13 +180,24 @@ cargo test --no-default-features
 
 Tests that use lists, hashes or expiry only run in the full build, and tests for the lite behavior only run in the lite build.
 
+Test coverage is measured with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) over both builds:
+
+```sh
+cargo llvm-cov clean --workspace
+cargo llvm-cov --no-report
+cargo llvm-cov --no-report --no-default-features
+cargo llvm-cov report
+```
+
+Integration tests stop the server with `SIGTERM`, so the server process exits normally and its coverage data is recorded.
+
 The repository ships a `pre-push` Git hook that runs `cargo fmt --check` and rejects the push if formatting differs. Enable it once per clone:
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
-The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests.
+The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. A separate job measures coverage for both builds, shows the summary on the workflow run page, and uploads the `lcov.info` report as an artifact. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
 
 | Path | Contents |
 | --- | --- |
@@ -198,6 +211,12 @@ The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` f
 | `helm/minidis/` | Helm chart |
 | `.githooks/` | Git hooks |
 | `.github/workflows/` | CI and release workflows |
+| `.github/dependabot.yml` | Dependabot configuration |
+| `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md` | Issue form and pull request template |
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for supported versions and how to report a vulnerability.
 
 ## License
 

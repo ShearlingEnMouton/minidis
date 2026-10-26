@@ -1,0 +1,60 @@
+name: Bug report
+description: Report behavior that does not match the documentation
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report security problems here. See SECURITY.md instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or commit, for example v0.3.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      options:
+        - full
+        - lite
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: How the server runs
+      options:
+        - Binary (cargo run or cargo build)
+        - Docker image
+        - Helm chart
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands sent to the server (for example with redis-cli) and any non-default settings such as AOF_FSYNC
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the replies and the relevant server log lines
+    validations:
+      required: true
