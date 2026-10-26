@@ -193,6 +193,10 @@ cargo llvm-cov report
 
 Integration tests stop the server with `SIGTERM`, so the server process exits normally and its coverage data is recorded.
 
+Coverage by file, where each block is a file sized by its number of lines and colored by its coverage:
+
+[![Coverage by file](https://codecov.io/gh/ShearlingEnMouton/minidis/graphs/tree.svg?token=ZCPNPLYSG2)](https://codecov.io/gh/ShearlingEnMouton/minidis)
+
 The repository ships a `pre-push` Git hook that runs `cargo fmt --check` and rejects the push if formatting differs. Enable it once per clone:
 
 ```sh
