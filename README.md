@@ -125,7 +125,7 @@ Main values:
 
 | Value | Default | Description |
 | --- | --- | --- |
-| `image.repository` | `ghcr.io/shearlingenmouton/minidis` | Image to run |
+| `image.repository` | `ghcr.io/shearlingenmouton/minidis` | Image to run. Another repository, such as a mirror, must use the same tag scheme: `<version>` for the full build and `<version>-lite` for the lite build |
 | `image.tag` | chart `appVersion` | Image tag. When set, it is used as is and `variant` adds no suffix |
 | `variant` | `full` | `full` or `lite`. `lite` selects the image tag `<appVersion>-lite`. Any other value makes the chart fail to render |
 | `logLevel` | `INFO` | Sets `LOG_LEVEL` |
