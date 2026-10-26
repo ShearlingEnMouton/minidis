@@ -59,12 +59,16 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Coverage summary
+        env:
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           {
             echo '## Coverage'
             echo '```'
             cargo llvm-cov report
             echo '```'
+            echo
+            echo "![Coverage by file](https://codecov.io/gh/ShearlingEnMouton/minidis/commit/${COMMIT_SHA}/graphs/tree.svg?token=ZCPNPLYSG2)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
