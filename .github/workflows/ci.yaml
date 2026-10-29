@@ -76,7 +76,7 @@ jobs:
           name: lcov
           path: lcov.info
 
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           use_oidc: true
