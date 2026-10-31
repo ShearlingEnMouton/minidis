@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
     sync::atomic::{AtomicU16, AtomicUsize, Ordering},
@@ -555,4 +555,24 @@ fn healthcheck_fails_without_a_server_and_leaves_the_aof_alone() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).starts_with("healthcheck failed:"));
     assert!(!dir.aof().exists());
+}
+
+#[test]
+fn healthcheck_fails_on_an_unexpected_reply() {
+    let dir = TempDir::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let fake_server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 14];
+        stream.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"*1\r\n$4\r\nPING\r\n");
+        stream.write_all(b"-ERR nope\r\n").unwrap();
+    });
+
+    let output = healthcheck(port, &dir.aof());
+    fake_server.join().unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected PING reply"));
 }
