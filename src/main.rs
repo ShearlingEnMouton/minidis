@@ -35,11 +35,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy = parse_fsync_policy(&env_or("AOF_FSYNC", "everysec"))?;
     let shutdown_timeout = Duration::from_secs(env_positive_u64("SHUTDOWN_TIMEOUT", 10)?);
 
-    let addr = format!("{}:{}", bind_addr, port);
-    let listener = TcpListener::bind(addr).await?;
-    let bind_addr = listener.local_addr()?;
-    log_info!("Listening on: {bind_addr}");
-
     let sigint = signal(SignalKind::interrupt())?;
     let sigterm = signal(SignalKind::terminate())?;
     let cancellation_token = CancellationToken::new();
@@ -50,6 +45,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_info!("AOF file: {}", aof_path);
     let replayed = Aof::replay(&aof_path, &store)?;
     log_info!("AOF replayed: {} commands", replayed);
+
+    let addr = format!("{}:{}", bind_addr, port);
+    let listener = TcpListener::bind(addr).await?;
+    let bind_addr = listener.local_addr()?;
+    log_info!("Listening on: {bind_addr}");
 
     aof.start_fsync_task();
 

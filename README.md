@@ -109,6 +109,8 @@ On `SIGTERM` or `SIGINT` the server shuts down in order:
 
 The signal handlers are installed before the AOF is replayed, so a signal received during a long replay is handled once the replay is done.
 
+The server starts listening only after the replay, so clients and the Kubernetes readiness probe cannot connect until the data is loaded.
+
 ## Docker
 
 The image is `ghcr.io/shearlingenmouton/minidis`. Available tags are listed on the [releases page](https://github.com/ShearlingEnMouton/minidis/releases). It is based on a distroless image and runs as a non-root user.
