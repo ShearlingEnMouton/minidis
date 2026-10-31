@@ -45,6 +45,8 @@ A pull request is ready for review when:
 - New behavior is covered by tests
 - The README, the Helm values and the configuration table are updated if behavior or settings changed
 
+Pull requests are merged with a merge commit, not squashed or rebased, so the branch and its commits stay visible in the history of `main`. The merge commit takes the pull request title, which follows the commit message format above. Clean up the branch's commits before opening the pull request, because each of them ends up in `main`.
+
 ## License
 
 Unless explicitly stated otherwise, any contribution intentionally submitted for inclusion in this project, as defined in the Apache-2.0 license, is dual licensed under the MIT and Apache-2.0 licenses, without any additional terms or conditions.
