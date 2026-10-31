@@ -152,9 +152,17 @@ Main values:
 | `aof.fsync` | `everysec` | Sets `AOF_FSYNC` |
 | `shutdown.timeout` | `10` | Sets `SHUTDOWN_TIMEOUT` |
 | `terminationGracePeriodSeconds` | `30` | Time Kubernetes waits before killing the pod. It is counted from the start of the `preStop` hook (`lifecycle.preStop.sleep.seconds`, 15 by default), so it must be larger than that sleep plus `shutdown.timeout` |
+| `startupProbe.periodSeconds` | `5` | Seconds between startup checks |
+| `startupProbe.failureThreshold` | `30` | Failed startup checks before the container is restarted. With `periodSeconds`, this gives the server 150 seconds by default to replay the AOF |
+| `startupProbe.timeoutSeconds` | `5` | Time limit for one startup check |
+| `livenessProbe.periodSeconds` | `5` | Seconds between liveness checks |
+| `livenessProbe.failureThreshold` | `3` | Consecutive failed liveness checks before the container is restarted |
+| `livenessProbe.timeoutSeconds` | `10` | Time limit for one liveness check |
 | `pvc.storage` | `2Gi` | Size of the volume that holds the AOF |
 
 The chart creates a `ReadWriteOnce` PersistentVolumeClaim mounted at `/data`. The claim has the `helm.sh/resource-policy: keep` annotation, so `helm uninstall` does not delete the data. The Deployment uses the `Recreate` strategy and runs one replica. minidis is a single-node server and must not be scaled beyond one replica.
+
+**Probes.** The startup and liveness probes run `minidis healthcheck` inside the container. In that mode the binary does not start a server. It connects to the address given by `BIND_ADDR` and `EXPOSE_PORT` (`127.0.0.1` when the server binds to `0.0.0.0`, `::1` for `::`), sends `PING`, and exits with status 0 if the reply is `PONG`. Otherwise it prints the error to stderr and exits with status 1. Kubernetes runs the liveness probe only after the startup probe has succeeded, so a long AOF replay is not mistaken for a stuck server. After that, the liveness probe restarts the container when the server stops answering. The readiness probe checks the TCP port, which opens only after the replay.
 
 Because the claim is kept, changing `variant` from `full` to `lite` on an existing release reuses the old AOF. If that file holds commands the lite build does not support, the pod fails to start until the AOF is emptied or a new volume is used. See [Lite build](#lite-build).
 
