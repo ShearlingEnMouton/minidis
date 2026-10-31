@@ -38,6 +38,22 @@ aof:
   # enum: always | everysec | no
   fsync: everysec
 
+healthCheckCmd:
+  exec:
+    command:
+    - /usr/local/bin/minidis
+    - healthcheck
+
+startupProbe:
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 30
+
+livenessProbe:
+  periodSeconds: 5
+  timeoutSeconds: 10
+  failureThreshold: 3
+
 readinessProbe:
   initialDelaySeconds: 5
   periodSeconds: 10

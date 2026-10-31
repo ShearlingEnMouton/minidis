@@ -36,6 +36,16 @@ spec:
         envFrom:
         - configMapRef:
             name: {{ include "minidisservice.name" . }}-cm
+        startupProbe:
+          {{- toYaml .Values.healthCheckCmd | nindent 10 }}
+          periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+        livenessProbe:
+          {{- toYaml .Values.healthCheckCmd | nindent 10 }}
+          periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
         readinessProbe:
           tcpSocket:
             port: {{ .Values.port }}

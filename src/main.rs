@@ -18,6 +18,7 @@ use crate::command::{Command, Reply};
 use crate::store::Store;
 mod aof;
 mod command;
+mod healthcheck;
 mod limits;
 mod logger;
 mod resp;
@@ -25,6 +26,14 @@ mod store;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        if let Err(e) = healthcheck::healthz() {
+            eprintln!("healthcheck failed: {e}");
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
     let bind_addr = env_or("BIND_ADDR", "0.0.0.0");
     let port = env_or("EXPOSE_PORT", "3131");
     #[cfg(feature = "full")]
@@ -195,7 +204,7 @@ async fn handle_client(
 
         if bytes_read == 0 {
             if seen_data {
-                log_info!("Client disconnected: {}", peer_addr);
+                log_debug!("Client disconnected: {}", peer_addr);
             } else {
                 log_debug!("Connection closed without data: {}", peer_addr);
             }
@@ -204,7 +213,7 @@ async fn handle_client(
 
         if !seen_data {
             seen_data = true;
-            log_info!("New client connected: {}", peer_addr);
+            log_debug!("New client connected: {}", peer_addr);
         }
 
         loop {

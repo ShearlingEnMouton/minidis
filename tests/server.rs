@@ -520,3 +520,39 @@ fn a_shutdown_signal_stops_the_server_cleanly_and_keeps_the_data() {
         assert_eq!(send(&mut c, &["GET", "a"]), "$1\r\n1\r\n", "SIG{signal}");
     }
 }
+
+fn healthcheck(port: u16, aof: &PathBuf) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_minidis"))
+        .arg("healthcheck")
+        .env("BIND_ADDR", "127.0.0.1")
+        .env("EXPOSE_PORT", port.to_string())
+        .env("AOF_PATH", aof)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn healthcheck_passes_while_the_server_is_up() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+
+    let output = healthcheck(server.port, &dir.aof());
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn healthcheck_fails_without_a_server_and_leaves_the_aof_alone() {
+    let dir = TempDir::new();
+    let port = PORT.fetch_add(1, Ordering::SeqCst);
+
+    let output = healthcheck(port, &dir.aof());
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("healthcheck failed:"));
+    assert!(!dir.aof().exists());
+}
