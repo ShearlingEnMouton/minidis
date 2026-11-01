@@ -149,7 +149,7 @@ Main values:
 | `purge.limit` | `1000` | Sets `PURGE_LIMIT`. Not set when `variant` is `lite` |
 | `purge.interval` | `100` | Sets `PURGE_INTERVAL`. Not set when `variant` is `lite` |
 | `aof.path` | `/data/appendonly.aof` | Sets `AOF_PATH` |
-| `aof.fsync` | `everysec` | Sets `AOF_FSYNC` |
+| `aof.fsync` | `everysec` | Sets `AOF_FSYNC`. Must be `always`, `everysec` or `no`, in lowercase. An unquoted `no` in a values file is read by YAML as `false` and is accepted as `no`. Any other value makes the chart fail to render |
 | `shutdown.timeout` | `10` | Sets `SHUTDOWN_TIMEOUT` |
 | `terminationGracePeriodSeconds` | `30` | Time Kubernetes waits before killing the pod. It is counted from the start of the `preStop` hook (`lifecycle.preStop.sleep.seconds`, 15 by default), so it must be larger than that sleep plus `shutdown.timeout` |
 | `startupProbe.periodSeconds` | `5` | Seconds between startup checks |
@@ -215,7 +215,7 @@ The repository ships a `pre-push` Git hook that runs `cargo fmt --check` and rej
 git config core.hooksPath .githooks
 ```
 
-The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. A separate job measures coverage for both builds, shows the summary on the workflow run page, uploads the `lcov.info` report as an artifact, and sends it to [Codecov](https://codecov.io/gh/ShearlingEnMouton/minidis) using GitHub OIDC, so no upload token is stored in the repository. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
+The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. The `chart` job runs `helm lint --strict` on the chart and checks that the `aof.fsync` value, given with `--set` or in a values file, reaches the container as `AOF_FSYNC` and that invalid values are rejected. A separate job measures coverage for both builds, shows the summary on the workflow run page, uploads the `lcov.info` report as an artifact, and sends it to [Codecov](https://codecov.io/gh/ShearlingEnMouton/minidis) using GitHub OIDC, so no upload token is stored in the repository. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
 
 | Path | Contents |
 | --- | --- |

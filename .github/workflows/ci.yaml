@@ -34,6 +34,40 @@ jobs:
       - name: Test (lite)
         run: cargo test --no-default-features
 
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set chart version
+        run: sed -i "s/LOCAL_GIT_TAG/0.0.0/g" helm/minidis/Chart.yaml
+
+      - name: Lint
+        run: helm lint --strict helm/minidis
+
+      - name: aof.fsync reaches the container as AOF_FSYNC
+        run: |
+          for policy in always everysec no; do
+            printf 'aof:\n  fsync: %s\n' "$policy" > values-test.yaml
+            for args in "--set aof.fsync=$policy" "-f values-test.yaml"; do
+              helm template minidis helm/minidis $args --show-only templates/configmap.yaml \
+                | grep -qx "  AOF_FSYNC: \"$policy\"" \
+                || { echo "AOF_FSYNC is not $policy with $args"; exit 1; }
+            done
+          done
+
+      - name: Invalid aof.fsync values are rejected
+        run: |
+          for value in yes true Always typo; do
+            printf 'aof:\n  fsync: %s\n' "$value" > values-test.yaml
+            for args in "--set aof.fsync=$value" "-f values-test.yaml"; do
+              if helm template minidis helm/minidis $args > /dev/null 2>&1; then
+                echo "aof.fsync=$value was accepted with $args"
+                exit 1
+              fi
+            done
+          done
+
   coverage:
     runs-on: ubuntu-latest
     permissions:

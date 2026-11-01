@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "aof": {
+      "type": "object",
+      "properties": {
+        "fsync": {
+          "description": "AOF fsync policy. An unquoted no in a values file is read as false and is accepted as no.",
+          "enum": ["always", "everysec", "no", false]
+        }
+      }
+    }
+  }
+}
