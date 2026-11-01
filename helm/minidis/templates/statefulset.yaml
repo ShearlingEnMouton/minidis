@@ -1,16 +1,25 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
-  name: "{{ include "minidisservice.name" . }}-dpl"
+  name: "{{ include "minidisservice.name" . }}-sts"
   labels:
 {{ include "minidisservice.labels" . | indent 4 }}
 spec:
   replicas: {{ .Values.replicas }}
+  serviceName: {{ include "minidisservice.name" . }}-headless
   selector:
     matchLabels:
 {{ include "minidisservice.matchLabels" . | indent 6 }}
-  strategy:
-    type: Recreate
+  updateStrategy:
+    type: {{ .Values.updateStrategy.type }}
+  volumeClaimTemplates:
+    - metadata:
+        name: minidis-data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: {{ .Values.pvc.storage }}
   template:
     metadata:
       labels:
@@ -52,7 +61,7 @@ spec:
           initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
           periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
         volumeMounts:
-          - name: storage-volume
+          - name: minidis-data
             mountPath: /data
 {{- with .Values.securityContext }}
         securityContext:
@@ -78,7 +87,3 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
 {{- end }}
-      volumes:
-        - name: storage-volume
-          persistentVolumeClaim:
-            claimName: "{{ include "minidisservice.name" . }}-pvc"

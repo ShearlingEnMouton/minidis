@@ -44,6 +44,9 @@ healthCheckCmd:
     - /usr/local/bin/minidis
     - healthcheck
 
+updateStrategy:
+  type: RollingUpdate
+
 startupProbe:
   periodSeconds: 5
   timeoutSeconds: 5
