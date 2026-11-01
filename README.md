@@ -160,7 +160,13 @@ Main values:
 | `livenessProbe.timeoutSeconds` | `10` | Time limit for one liveness check |
 | `pvc.storage` | `2Gi` | Size of the volume that holds the AOF |
 
-The chart creates a `ReadWriteOnce` PersistentVolumeClaim mounted at `/data`. The claim has the `helm.sh/resource-policy: keep` annotation, so `helm uninstall` does not delete the data. The Deployment uses the `Recreate` strategy and runs one replica. minidis is a single-node server and must not be scaled beyond one replica.
+The chart runs minidis as a StatefulSet with one replica. Besides the client Service, it creates a headless Service named `<name>-headless`, which the StatefulSet requires. The StatefulSet creates a `ReadWriteOnce` PersistentVolumeClaim from its claim template and mounts it at `/data`. The claim is named `minidis-data-<name>-sts-0`, which is `minidis-data-minidis-sts-0` by default. Kubernetes does not delete this claim when the StatefulSet is deleted, so `helm uninstall` keeps the data. To remove the data, delete the claim manually.
+
+minidis is a single-node server and must not be scaled beyond one replica. Each additional replica would get its own volume and AOF, and the Service would spread clients across independent datasets.
+
+The claim template cannot be changed on an existing StatefulSet, so changing `pvc.storage` after installation makes `helm upgrade` fail. To resize the volume, edit the PersistentVolumeClaim directly. This works only if its StorageClass allows volume expansion.
+
+**Upgrading from 0.4.x or earlier.** Earlier charts ran a Deployment with a claim named `minidis-pvc`. An upgrade replaces the Deployment with the StatefulSet, which starts with a new, empty claim. The old claim is not deleted because it has the `helm.sh/resource-policy: keep` annotation, but the chart no longer uses it. To keep the data, scale the StatefulSet to zero, copy `appendonly.aof` from the old claim to the new one, then scale it back to one.
 
 **Probes.** The startup and liveness probes run `minidis healthcheck` inside the container. In that mode the binary does not start a server. It connects to the address given by `BIND_ADDR` and `EXPOSE_PORT` (`127.0.0.1` when the server binds to `0.0.0.0`, `::1` for `::`), sends `PING`, and exits with status 0 if the reply is `PONG`. Otherwise it prints the error to stderr and exits with status 1. Kubernetes runs the liveness probe only after the startup probe has succeeded, so a long AOF replay is not mistaken for a stuck server. After that, the liveness probe restarts the container when the server stops answering. The readiness probe checks the TCP port, which opens only after the replay.
 

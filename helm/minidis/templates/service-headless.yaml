@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ include "minidisservice.name" . }}-headless"
+  labels:
+{{ include "minidisservice.labels" . | indent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - port: {{ .Values.port }}
+      targetPort: {{ .Values.port }}
+  selector:
+{{ include "minidisservice.matchLabels" . | indent 4 }}
