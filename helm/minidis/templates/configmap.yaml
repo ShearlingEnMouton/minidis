@@ -10,7 +10,15 @@ data:
   LOG_LEVEL: {{ .Values.logLevel | quote }}
   SHUTDOWN_TIMEOUT: {{ .Values.shutdown.timeout | quote }}
   AOF_PATH: {{ .Values.aof.path | quote }}
+{{- if kindIs "bool" .Values.aof.fsync }}
+  {{- if not .Values.aof.fsync }}
+  AOF_FSYNC: "no"
+  {{- else }}
+    {{- fail "aof.fsync must be one of always, everysec or no" }}
+  {{- end }}
+{{- else }}
   AOF_FSYNC: {{ .Values.aof.fsync | quote }}
+{{- end }}
 {{- if eq .Values.variant "full" }}
   PURGE_LIMIT: {{ .Values.purge.limit | quote }}
   PURGE_INTERVAL: {{ .Values.purge.interval | quote }}
