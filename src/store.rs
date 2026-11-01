@@ -421,6 +421,34 @@ mod tests {
         assert!(matches!(store.ttl(&k("l")), TtlStatus::NoExpiry));
         check_invariants(&store);
     }
+
+    #[test]
+    fn purge_expired_removes_at_most_limit_keys_per_pass() {
+        let store = Store::new();
+        {
+            let mut g = store.inner.lock().unwrap();
+            let now = Instant::now();
+            for key in ["a", "b", "c", "d", "e"] {
+                g.insert(k(key), EntryType::Value(k("v")), Some(now));
+            }
+        }
+        store.set(k("persistent"), k("v"), None);
+        store.set(k("later"), k("v"), Some(Duration::from_secs(100)));
+
+        assert_eq!(store.purge_expired(2), 2);
+        assert_eq!(store.dbsize(), 5);
+        check_invariants(&store);
+
+        assert_eq!(store.purge_expired(2), 2);
+        assert_eq!(store.dbsize(), 3);
+
+        assert_eq!(store.purge_expired(2), 1);
+        assert_eq!(store.purge_expired(2), 0);
+        assert_eq!(store.dbsize(), 2);
+        assert_eq!(store.get(&k("persistent")).unwrap(), Some(k("v")));
+        assert_eq!(store.get(&k("later")).unwrap(), Some(k("v")));
+        check_invariants(&store);
+    }
 }
 
 #[cfg(all(test, not(feature = "full")))]
