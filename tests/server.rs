@@ -58,6 +58,15 @@ impl Server {
     }
 
     fn spawn_with_env(aof: &PathBuf, fsync: &str, extra: &[(&str, &str)]) -> Server {
+        Server::spawn_with_stdout(aof, fsync, extra, Stdio::null())
+    }
+
+    fn spawn_with_stdout(
+        aof: &PathBuf,
+        fsync: &str,
+        extra: &[(&str, &str)],
+        stdout: Stdio,
+    ) -> Server {
         let port = PORT.fetch_add(1, Ordering::SeqCst);
         let child = Command::new(env!("CARGO_BIN_EXE_minidis"))
             .env("BIND_ADDR", "127.0.0.1")
@@ -66,7 +75,7 @@ impl Server {
             .env("AOF_FSYNC", fsync)
             .env("LOG_LEVEL", "ERR")
             .envs(extra.iter().copied())
-            .stdout(Stdio::null())
+            .stdout(stdout)
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
@@ -350,6 +359,25 @@ fn a_protocol_error_closes_the_connection() {
 }
 
 #[test]
+fn a_request_over_the_buffer_limit_closes_the_connection() {
+    const MAX_BULK_LEN: usize = 64 * 1024 * 1024;
+    const MAX_BUFFER_SIZE: usize = 128 * 1024 * 1024;
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    let mut request = format!("*3\r\n${MAX_BULK_LEN}\r\n").into_bytes();
+    request.resize(request.len() + MAX_BULK_LEN, b'x');
+    request.extend_from_slice(format!("\r\n${MAX_BULK_LEN}\r\n").as_bytes());
+    request.resize(MAX_BUFFER_SIZE + 1, b'y');
+
+    let reply = "-ERR Protocol error: request too large\r\n";
+    assert_eq!(send_raw(&mut c, &request, reply.len()), reply);
+    let mut rest = [0u8; 1];
+    assert_eq!(c.read(&mut rest).unwrap(), 0);
+}
+
+#[test]
 fn writes_from_many_clients_are_all_restored() {
     let dir = TempDir::new();
     let mut server = Server::start(&dir.aof());
@@ -519,6 +547,34 @@ fn a_shutdown_signal_stops_the_server_cleanly_and_keeps_the_data() {
         let mut c = server.connect();
         assert_eq!(send(&mut c, &["GET", "a"]), "$1\r\n1\r\n", "SIG{signal}");
     }
+}
+
+#[test]
+fn an_invalid_log_level_falls_back_to_info() {
+    let dir = TempDir::new();
+    let mut server = Server::spawn_with_stdout(
+        &dir.aof(),
+        "always",
+        &[("LOG_LEVEL", "bogus")],
+        Stdio::piped(),
+    );
+    server.wait_until_ready();
+    let mut c = server.connect();
+    assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
+    drop(c);
+    server.stop();
+
+    let mut out = String::new();
+    server
+        .child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    assert!(out.contains("Invalid log level: BOGUS"), "{out}");
+    assert!(out.contains("[INFO] Listening on"), "{out}");
+    assert!(!out.contains("[DEBUG]"), "{out}");
 }
 
 fn healthcheck(port: u16, aof: &PathBuf) -> std::process::Output {
