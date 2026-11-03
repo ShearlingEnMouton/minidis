@@ -7,13 +7,13 @@ pub enum CommandError {
         args: String,
     },
     WrongArity(&'static str),
-    #[cfg(feature = "full")]
     NotAnInteger,
     #[cfg(feature = "full")]
     InvalidExpire(&'static str),
     #[cfg(feature = "full")]
     SyntaxError,
     WrongType,
+    NoProto,
 }
 impl From<StoreError> for CommandError {
     fn from(e: StoreError) -> Self {

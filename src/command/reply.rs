@@ -1,6 +1,11 @@
 use super::CommandError;
 use std::io::Write;
 
+#[derive(Debug)]
+pub enum Protocol {
+    Resp2,
+    Resp3,
+}
 pub enum Reply {
     Simple(&'static str),
     Error(String),
@@ -8,9 +13,10 @@ pub enum Reply {
     Bulk(Vec<u8>),
     Nil,
     Array(Vec<Reply>),
+    Map(Vec<(Reply, Reply)>),
 }
 impl Reply {
-    pub fn encode(&self, out: &mut Vec<u8>) {
+    pub fn encode(&self, out: &mut Vec<u8>, protocol: &Protocol) {
         match self {
             Reply::Simple(s) => {
                 out.extend_from_slice(b"+");
@@ -30,11 +36,24 @@ impl Reply {
                 out.extend_from_slice(v);
                 out.extend_from_slice(b"\r\n");
             }
-            Reply::Nil => out.extend_from_slice(b"$-1\r\n"),
+            Reply::Nil => match protocol {
+                Protocol::Resp2 => out.extend_from_slice(b"$-1\r\n"),
+                Protocol::Resp3 => out.extend_from_slice(b"_\r\n"),
+            },
             Reply::Array(items) => {
                 let _ = write!(out, "*{}\r\n", items.len());
                 for item in items {
-                    item.encode(out);
+                    item.encode(out, protocol);
+                }
+            }
+            Reply::Map(pairs) => {
+                let _ = match protocol {
+                    Protocol::Resp2 => write!(out, "*{}\r\n", pairs.len() * 2),
+                    Protocol::Resp3 => write!(out, "%{}\r\n", pairs.len()),
+                };
+                for (k, v) in pairs {
+                    k.encode(out, protocol);
+                    v.encode(out, protocol);
                 }
             }
         }
@@ -52,7 +71,6 @@ impl From<CommandError> for Reply {
             CommandError::WrongArity(cmd) => {
                 Reply::Error(format!("ERR wrong number of arguments for '{cmd}' command"))
             }
-            #[cfg(feature = "full")]
             CommandError::NotAnInteger => {
                 Reply::Error("ERR value is not an integer or out of range".to_owned())
             }
@@ -62,6 +80,9 @@ impl From<CommandError> for Reply {
             }
             #[cfg(feature = "full")]
             CommandError::SyntaxError => Reply::Error("ERR syntax error".to_owned()),
+            CommandError::NoProto => {
+                Reply::Error("NOPROTO unsupported protocol version".to_owned())
+            }
         }
     }
 }

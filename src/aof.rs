@@ -14,7 +14,7 @@ use std::{
 #[cfg(feature = "full")]
 use crate::store::{SnapshotEntry, SnapshotValue};
 use crate::{
-    command::{Command, Reply},
+    command::{Command, Protocol, Reply},
     log_err, log_warn, resp,
     store::Store,
 };
@@ -80,7 +80,8 @@ impl Aof {
 
     pub fn append(file: &mut File, args: &[Vec<u8>]) -> io::Result<()> {
         let mut buf = Vec::new();
-        Reply::Array(args.iter().cloned().map(Reply::Bulk).collect()).encode(&mut buf);
+        Reply::Array(args.iter().cloned().map(Reply::Bulk).collect())
+            .encode(&mut buf, &Protocol::Resp2);
         file.write_all(&buf)
     }
 

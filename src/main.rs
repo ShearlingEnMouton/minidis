@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -14,7 +18,7 @@ use tokio::{
 };
 
 use crate::aof::{Aof, FsyncPolicy};
-use crate::command::{Command, Reply};
+use crate::command::{Command, Protocol, Reply};
 use crate::store::Store;
 mod aof;
 mod command;
@@ -23,6 +27,8 @@ mod limits;
 mod logger;
 mod resp;
 mod store;
+
+static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -115,8 +121,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let aof = aof.clone();
                 let client_token = cancellation_token.clone();
+                let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
                 tracker.spawn(async move {
-                    if let Err(e) = handle_client(socket, peer_addr, &store, &aof, &client_token, idle_timeout).await {
+                    if let Err(e) = handle_client(socket, peer_addr, &store, &aof, &client_token, idle_timeout, client_id).await {
                         log_err!("Error handling client {}: {:?}", peer_addr, e);
                     }
                 });
@@ -189,7 +196,13 @@ fn parse_fsync_policy(value: &str) -> Result<FsyncPolicy, String> {
     }
 }
 
-fn dispatch(args: &[Vec<u8>], store: &Store, aof: &Aof) -> Reply {
+fn dispatch(
+    args: &[Vec<u8>],
+    store: &Store,
+    aof: &Aof,
+    protocol: &mut Protocol,
+    client_id: u64,
+) -> Reply {
     let cmd = match Command::from_args(args) {
         Ok(cmd) => cmd,
         Err(e) => return Reply::from(e),
@@ -207,6 +220,40 @@ fn dispatch(args: &[Vec<u8>], store: &Store, aof: &Aof) -> Reply {
             }
         };
     }
+    if let Command::Hello { protover } = cmd {
+        if let Some(p) = protover {
+            *protocol = p;
+        }
+        let proto = match *protocol {
+            Protocol::Resp2 => 2,
+            Protocol::Resp3 => 3,
+        };
+
+        return Reply::Map(vec![
+            (
+                Reply::Bulk(b"server".to_vec()),
+                Reply::Bulk(b"minidis".to_vec()),
+            ),
+            (
+                Reply::Bulk(b"version".to_vec()),
+                Reply::Bulk(env!("CARGO_PKG_VERSION").into()),
+            ),
+            (Reply::Bulk(b"proto".to_vec()), Reply::Integer(proto)),
+            (
+                Reply::Bulk(b"id".to_vec()),
+                Reply::Integer(client_id as i64),
+            ),
+            (
+                Reply::Bulk(b"mode".to_vec()),
+                Reply::Bulk(b"standalone".to_vec()),
+            ),
+            (
+                Reply::Bulk(b"role".to_vec()),
+                Reply::Bulk(b"master".to_vec()),
+            ),
+            (Reply::Bulk(b"modules".to_vec()), Reply::Array(Vec::new())),
+        ]);
+    }
     if cmd.is_write() {
         aof.run_write(cmd, args, store)
     } else {
@@ -221,8 +268,10 @@ async fn handle_client(
     aof: &Aof,
     cancellation_token: &CancellationToken,
     idle_timeout: Option<Duration>,
+    client_id: u64,
 ) -> tokio::io::Result<()> {
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
+    let mut protocol = Protocol::Resp2;
     let mut seen_data = false;
     loop {
         let bytes_read = tokio::select! {
@@ -256,7 +305,8 @@ async fn handle_client(
                         continue;
                     }
                     let mut out = Vec::new();
-                    dispatch(&args, store, aof).encode(&mut out);
+                    dispatch(&args, store, aof, &mut protocol, client_id)
+                        .encode(&mut out, &protocol);
                     stream.write_all(&out).await?;
                 }
                 Ok(None) => break,

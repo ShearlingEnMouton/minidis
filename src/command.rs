@@ -6,13 +6,12 @@ use crate::store::Store;
 #[cfg(feature = "full")]
 use crate::store::TtlStatus;
 use error::CommandError;
-pub use reply::Reply;
+pub use reply::{Protocol, Reply};
 #[cfg(feature = "full")]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub use types::Command;
 
 impl Command {
-    #[cfg(feature = "full")]
     fn parse_int(arg: &[u8]) -> Result<i64, CommandError> {
         let s = std::str::from_utf8(arg).map_err(|_| CommandError::NotAnInteger)?;
         s.parse().map_err(|_| CommandError::NotAnInteger)
@@ -83,6 +82,21 @@ impl Command {
                     message: Some(args[1].clone()),
                 }),
                 _ => Err(CommandError::WrongArity("ping")),
+            },
+            b"HELLO" => match args.len() {
+                1 => Ok(Command::Hello { protover: None }),
+                2 => {
+                    let protocol = match Self::parse_int(&args[1])? {
+                        2 => Protocol::Resp2,
+                        3 => Protocol::Resp3,
+                        _ => return Err(CommandError::NoProto),
+                    };
+
+                    Ok(Command::Hello {
+                        protover: Some(protocol),
+                    })
+                }
+                _ => Err(CommandError::WrongArity("hello")),
             },
             b"GET" => match args.len() {
                 2 => Ok(Command::Get {
@@ -290,6 +304,9 @@ impl Command {
             Command::Ping {
                 message: Some(message),
             } => Reply::Bulk(message),
+            Command::Hello { .. } => {
+                Reply::Error("NOPROTO unsupported protocol version".to_owned())
+            }
             Command::Get { key } => match store.get(&key) {
                 Ok(None) => Reply::Nil,
                 Ok(Some(value)) => Reply::Bulk(value),
@@ -399,10 +416,10 @@ impl Command {
             },
             #[cfg(feature = "full")]
             Command::Hgetall { key } => match store.hgetall(&key) {
-                Ok(pairs) => Reply::Array(
+                Ok(pairs) => Reply::Map(
                     pairs
                         .into_iter()
-                        .flat_map(|(f, v)| [Reply::Bulk(f), Reply::Bulk(v)])
+                        .map(|(f, v)| (Reply::Bulk(f), Reply::Bulk(v)))
                         .collect(),
                 ),
                 Err(e) => CommandError::from(e).into(),
@@ -651,7 +668,9 @@ mod tests {
     #[test]
     fn rewriteaof_is_not_executed_by_the_store() {
         let mut out = Vec::new();
-        Command::Rewriteaof.execute(&Store::new()).encode(&mut out);
+        Command::Rewriteaof
+            .execute(&Store::new())
+            .encode(&mut out, &Protocol::Resp2);
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "-ERR REWRITEAOF is handled by the AOF\r\n"
@@ -729,7 +748,7 @@ mod execute_tests {
             Err(e) => Reply::from(e),
         };
         let mut out = Vec::new();
-        reply.encode(&mut out);
+        reply.encode(&mut out, &Protocol::Resp2);
         String::from_utf8(out).unwrap()
     }
 
