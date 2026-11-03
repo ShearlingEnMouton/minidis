@@ -33,6 +33,10 @@ purge:
   limit: 1000
   interval: 100
 
+connectionLimit:
+  maxClients: 1000
+  idleTimeout: 3600
+
 aof:
   path: /data/appendonly.aof
   # enum: always | everysec | no

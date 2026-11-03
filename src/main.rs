@@ -3,7 +3,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     signal::unix::{Signal, SignalKind, signal},
-    time::timeout,
+    time::{sleep, timeout},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -43,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let aof_path = env_or("AOF_PATH", "/data/appendonly.aof");
     let policy = parse_fsync_policy(&env_or("AOF_FSYNC", "everysec"))?;
     let shutdown_timeout = Duration::from_secs(env_positive_u64("SHUTDOWN_TIMEOUT", 10)?);
+
+    let max_clients = env_positive_u64("MAX_CLIENTS", 1000)?;
+    let idle_timeout = env_duration("IDLE_TIMEOUT", 3600)?;
 
     let sigint = signal(SignalKind::interrupt())?;
     let sigterm = signal(SignalKind::terminate())?;
@@ -102,10 +105,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             res = listener.accept() => {
                 let (socket, peer_addr) = res?;
                 let store = store.clone();
+
+                if tracker.len() as u64 >= max_clients {
+                    log_warn!("max number of clients reached");
+                    let _ = socket.try_write(b"-ERR max number of clients reached\r\n");
+                    drop(socket);
+                    continue;
+                }
+
                 let aof = aof.clone();
                 let client_token = cancellation_token.clone();
                 tracker.spawn(async move {
-                    if let Err(e) = handle_client(socket, peer_addr, &store, &aof, &client_token).await {
+                    if let Err(e) = handle_client(socket, peer_addr, &store, &aof, &client_token, idle_timeout).await {
                         log_err!("Error handling client {}: {:?}", peer_addr, e);
                     }
                 });
@@ -153,6 +164,22 @@ fn env_positive_u64(name: &str, default: u64) -> Result<u64, String> {
     }
 }
 
+fn env_duration(name: &str, default: u64) -> Result<Option<Duration>, String> {
+    match std::env::var(name) {
+        Err(_) => Ok(Some(Duration::from_secs(default))),
+        Ok(v) => match v.parse::<u64>() {
+            Ok(n) => {
+                if n == 0 {
+                    Ok(None)
+                } else {
+                    Ok(Some(Duration::from_secs(n)))
+                }
+            }
+            _ => Err(format!("{name} must be a non-negative integer")),
+        },
+    }
+}
+
 fn parse_fsync_policy(value: &str) -> Result<FsyncPolicy, String> {
     match value.to_ascii_lowercase().as_str() {
         "always" => Ok(FsyncPolicy::Always),
@@ -193,6 +220,7 @@ async fn handle_client(
     store: &Store,
     aof: &Aof,
     cancellation_token: &CancellationToken,
+    idle_timeout: Option<Duration>,
 ) -> tokio::io::Result<()> {
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut seen_data = false;
@@ -200,6 +228,10 @@ async fn handle_client(
         let bytes_read = tokio::select! {
             res = stream.read_buf(&mut buffer) => res?,
             _ = cancellation_token.cancelled() => return Ok(()),
+            _ = sleep(idle_timeout.unwrap_or_default()), if idle_timeout.is_some() => {
+                log_debug!("Idle timeout: {}", peer_addr);
+                return Ok(());
+            },
         };
 
         if bytes_read == 0 {
