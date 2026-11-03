@@ -7,7 +7,27 @@
       "properties": {
         "fsync": {
           "description": "AOF fsync policy. An unquoted no in a values file is read as false and is accepted as no.",
-          "enum": ["always", "everysec", "no", false]
+          "enum": [
+            "always",
+            "everysec",
+            "no",
+            false
+          ]
+        }
+      }
+    },
+    "connectionLimit": {
+      "type": "object",
+      "properties": {
+        "maxClients": {
+          "description": "Most client connections open at the same time (MAX_CLIENTS).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "idleTimeout": {
+          "description": "Seconds without data after which a client connection is closed (IDLE_TIMEOUT). 0 disables the timeout.",
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

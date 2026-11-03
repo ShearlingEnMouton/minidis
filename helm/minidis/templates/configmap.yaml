@@ -10,6 +10,8 @@ data:
   LOG_LEVEL: {{ .Values.logLevel | quote }}
   SHUTDOWN_TIMEOUT: {{ .Values.shutdown.timeout | quote }}
   AOF_PATH: {{ .Values.aof.path | quote }}
+  MAX_CLIENTS: {{ .Values.connectionLimit.maxClients | quote }}
+  IDLE_TIMEOUT: {{ .Values.connectionLimit.idleTimeout | quote }}
 {{- if kindIs "bool" .Values.aof.fsync }}
   {{- if not .Values.aof.fsync }}
   AOF_FSYNC: "no"

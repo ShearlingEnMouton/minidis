@@ -76,8 +76,10 @@ All settings are environment variables.
 | `AOF_PATH` | `/data/appendonly.aof` | Location of the append-only file |
 | `AOF_FSYNC` | `everysec` | `always`, `everysec` or `no`. See [Persistence](#persistence-aof) |
 | `SHUTDOWN_TIMEOUT` | `10` | Seconds to wait for open client connections when shutting down. Must be greater than 0. See [Shutdown](#shutdown) |
+| `MAX_CLIENTS` | `1000` | Most client connections open at the same time. Must be greater than 0. See [Connection limits](#connection-limits) |
+| `IDLE_TIMEOUT` | `3600` | Seconds without data from a client after which its connection is closed. `0` disables the timeout. See [Connection limits](#connection-limits) |
 
-The server exits at startup if `AOF_FSYNC` or `SHUTDOWN_TIMEOUT` has an invalid value, and in the full build also if `PURGE_LIMIT` or `PURGE_INTERVAL` has one.
+The server exits at startup if `AOF_FSYNC`, `SHUTDOWN_TIMEOUT`, `MAX_CLIENTS` or `IDLE_TIMEOUT` has an invalid value, and in the full build also if `PURGE_LIMIT` or `PURGE_INTERVAL` has one.
 
 ## Persistence (AOF)
 
@@ -96,6 +98,12 @@ Every write command that succeeds is appended to the AOF in RESP format. Reads a
 | `no` | Leave flushing to the operating system. Fastest |
 
 **Compaction.** `REWRITEAOF` shrinks the file. It writes the current data as the shortest list of commands (`SET`, `RPUSH`, `HSET`, plus `PXAT`/`PEXPIREAT` for keys with a TTL) to a temporary file, then renames it over the old one. If anything fails, the old file stays untouched. Writes are blocked while it runs, and it only runs when `REWRITEAOF` is called. There is no automatic trigger yet.
+
+## Connection limits
+
+**Maximum clients.** When `MAX_CLIENTS` connections are already open, a new connection receives `-ERR max number of clients reached` and is closed right away, as in Redis. The slot is freed when one of the open connections closes. Connections opened by the Kubernetes probes count as clients too, so a server that stays full also fails its liveness probe and is restarted after `livenessProbe.failureThreshold` failed checks.
+
+**Idle timeout.** A connection that sends no data for `IDLE_TIMEOUT` seconds is closed without a reply. Every received chunk of data restarts the timer. Clients that keep a connection pool open, such as most Redis client libraries, usually reconnect on their own. Set `IDLE_TIMEOUT` to `0` to keep idle connections open, which is the Redis default.
 
 ## Shutdown
 
@@ -151,6 +159,8 @@ Main values:
 | `aof.path` | `/data/appendonly.aof` | Sets `AOF_PATH` |
 | `aof.fsync` | `everysec` | Sets `AOF_FSYNC`. Must be `always`, `everysec` or `no`, in lowercase. An unquoted `no` in a values file is read by YAML as `false` and is accepted as `no`. Any other value makes the chart fail to render |
 | `shutdown.timeout` | `10` | Sets `SHUTDOWN_TIMEOUT` |
+| `connectionLimit.maxClients` | `1000` | Sets `MAX_CLIENTS`. Must be an integer greater than 0 |
+| `connectionLimit.idleTimeout` | `3600` | Sets `IDLE_TIMEOUT`. Must be an integer, 0 or greater |
 | `terminationGracePeriodSeconds` | `30` | Time Kubernetes waits before killing the pod. It is counted from the start of the `preStop` hook (`lifecycle.preStop.sleep.seconds`, 15 by default), so it must be larger than that sleep plus `shutdown.timeout` |
 | `startupProbe.periodSeconds` | `5` | Seconds between startup checks |
 | `startupProbe.failureThreshold` | `30` | Failed startup checks before the container is restarted. With `periodSeconds`, this gives the server 150 seconds by default to replay the AOF |
@@ -215,7 +225,7 @@ The repository ships a `pre-push` Git hook that runs `cargo fmt --check` and rej
 git config core.hooksPath .githooks
 ```
 
-The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. The `chart` job runs `helm lint --strict` on the chart and checks that the `aof.fsync` value, given with `--set` or in a values file, reaches the container as `AOF_FSYNC` and that invalid values are rejected. A separate job measures coverage for both builds, shows the summary on the workflow run page, uploads the `lcov.info` report as an artifact, and sends it to [Codecov](https://codecov.io/gh/ShearlingEnMouton/minidis) using GitHub OIDC, so no upload token is stored in the repository. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
+The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. The `chart` job runs `helm lint --strict` on the chart and checks that the `aof.fsync` value, given with `--set` or in a values file, reaches the container as `AOF_FSYNC`, checks the same for the `connectionLimit` values, and checks that invalid values are rejected. A separate job measures coverage for both builds, shows the summary on the workflow run page, uploads the `lcov.info` report as an artifact, and sends it to [Codecov](https://codecov.io/gh/ShearlingEnMouton/minidis) using GitHub OIDC, so no upload token is stored in the repository. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
 
 | Path | Contents |
 | --- | --- |

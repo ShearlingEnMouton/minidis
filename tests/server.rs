@@ -549,6 +549,92 @@ fn a_shutdown_signal_stops_the_server_cleanly_and_keeps_the_data() {
     }
 }
 
+fn connect_and_ping(server: &Server) -> TcpStream {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut c = server.connect();
+        if send(&mut c, &["PING"]) == "+PONG\r\n" {
+            return c;
+        }
+        assert!(Instant::now() < deadline, "no free client slot");
+        sleep(Duration::from_millis(20));
+    }
+}
+
+fn read_until_closed(stream: &mut TcpStream) -> String {
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply).unwrap();
+    String::from_utf8(reply).unwrap()
+}
+
+#[test]
+fn a_client_over_max_clients_is_rejected_until_a_slot_frees() {
+    let dir = TempDir::new();
+    let mut server = Server::spawn_with_env(&dir.aof(), "always", &[("MAX_CLIENTS", "2")]);
+    server.wait_until_ready();
+
+    let first = connect_and_ping(&server);
+    let mut second = connect_and_ping(&server);
+
+    let mut extra = server.connect();
+    assert_eq!(
+        read_until_closed(&mut extra),
+        "-ERR max number of clients reached\r\n"
+    );
+    assert_eq!(send(&mut second, &["PING"]), "+PONG\r\n");
+
+    drop(first);
+    let mut replacement = connect_and_ping(&server);
+    assert_eq!(send(&mut replacement, &["SET", "k", "v"]), "+OK\r\n");
+}
+
+#[test]
+fn an_idle_connection_is_closed_after_the_timeout() {
+    let dir = TempDir::new();
+    let mut server = Server::spawn_with_env(&dir.aof(), "always", &[("IDLE_TIMEOUT", "1")]);
+    server.wait_until_ready();
+    let mut c = server.connect();
+    c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+    for _ in 0..3 {
+        sleep(Duration::from_millis(600));
+        assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
+    }
+
+    let idle_since = Instant::now();
+    assert_eq!(read_until_closed(&mut c), "");
+    let idle = idle_since.elapsed();
+    assert!(idle >= Duration::from_millis(900), "closed after {idle:?}");
+    assert!(idle < Duration::from_secs(3), "closed after {idle:?}");
+}
+
+#[test]
+fn an_idle_timeout_of_zero_keeps_connections_open() {
+    let dir = TempDir::new();
+    let mut server = Server::spawn_with_env(&dir.aof(), "always", &[("IDLE_TIMEOUT", "0")]);
+    server.wait_until_ready();
+    let mut c = server.connect();
+    assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
+
+    sleep(Duration::from_millis(1500));
+    assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
+}
+
+#[test]
+fn invalid_connection_limits_stop_the_server_from_starting() {
+    for (name, value) in [
+        ("MAX_CLIENTS", "0"),
+        ("MAX_CLIENTS", "abc"),
+        ("IDLE_TIMEOUT", "-1"),
+        ("IDLE_TIMEOUT", "abc"),
+    ] {
+        let dir = TempDir::new();
+        let mut server = Server::spawn_with_env(&dir.aof(), "always", &[(name, value)]);
+        let status = server.wait_for_exit(Duration::from_secs(5));
+        assert!(!status.success(), "{name}={value}");
+    }
+}
+
 #[test]
 fn an_invalid_log_level_falls_back_to_info() {
     let dir = TempDir::new();

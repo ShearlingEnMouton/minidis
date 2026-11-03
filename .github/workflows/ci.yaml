@@ -68,6 +68,24 @@ jobs:
             done
           done
 
+      - name: connectionLimit reaches the container
+        run: |
+          out=$(helm template minidis helm/minidis \
+            --set connectionLimit.maxClients=50 --set connectionLimit.idleTimeout=0 \
+            --show-only templates/configmap.yaml)
+          grep -qx '  MAX_CLIENTS: "50"' <<< "$out" || { echo "MAX_CLIENTS is not 50"; exit 1; }
+          grep -qx '  IDLE_TIMEOUT: "0"' <<< "$out" || { echo "IDLE_TIMEOUT is not 0"; exit 1; }
+
+      - name: Invalid connectionLimit values are rejected
+        run: |
+          for args in "connectionLimit.maxClients=0" "connectionLimit.maxClients=abc" \
+                      "connectionLimit.idleTimeout=-1" "connectionLimit.idleTimeout=1.5"; do
+            if helm template minidis helm/minidis --set "$args" > /dev/null 2>&1; then
+              echo "$args was accepted"
+              exit 1
+            fi
+          done
+
   coverage:
     runs-on: ubuntu-latest
     permissions:
