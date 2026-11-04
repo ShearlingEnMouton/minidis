@@ -98,6 +98,13 @@ impl Command {
                 }
                 _ => Err(CommandError::WrongArity("hello")),
             },
+            b"INFO" => match args.len() {
+                1 => Ok(Command::Info { section: None }),
+                2 => Ok(Command::Info {
+                    section: Some(args[1].clone()),
+                }),
+                _ => Err(CommandError::WrongArity("info")),
+            },
             b"GET" => match args.len() {
                 2 => Ok(Command::Get {
                     key: args[1].clone(),
@@ -298,6 +305,21 @@ impl Command {
         }
     }
 
+    fn info_text(section: Option<&[u8]>) -> Vec<u8> {
+        let server = format!(
+            "# Server\r\nminidis_version:{}\r\nredis_mode:standalone\r\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        let persistence = "# Persistence\r\nloading:0\r\n";
+        let text = match section {
+            None => format!("{server}\r\n{persistence}"),
+            Some(name) if name.eq_ignore_ascii_case(b"server") => server,
+            Some(name) if name.eq_ignore_ascii_case(b"persistence") => persistence.to_owned(),
+            Some(_) => String::new(),
+        };
+        text.into_bytes()
+    }
+
     pub fn execute(self, store: &Store) -> Reply {
         match self {
             Command::Ping { message: None } => Reply::Simple("PONG"),
@@ -307,6 +329,7 @@ impl Command {
             Command::Hello { .. } => {
                 Reply::Error("NOPROTO unsupported protocol version".to_owned())
             }
+            Command::Info { section } => Reply::Bulk(Self::info_text(section.as_deref())),
             Command::Get { key } => match store.get(&key) {
                 Ok(None) => Reply::Nil,
                 Ok(Some(value)) => Reply::Bulk(value),

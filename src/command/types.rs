@@ -11,6 +11,9 @@ pub enum Command {
     Hello {
         protover: Option<Protocol>,
     },
+    Info {
+        section: Option<Vec<u8>>,
+    },
     Get {
         key: Vec<u8>,
     },
