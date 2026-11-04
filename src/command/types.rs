@@ -1,11 +1,22 @@
 #[cfg(feature = "full")]
 use std::time::Duration;
 
+use crate::command::Protocol;
+
 #[derive(Debug)]
 pub enum Command {
     Ping {
         message: Option<Vec<u8>>,
     },
+    Hello {
+        protover: Option<Protocol>,
+    },
+    Info {
+        section: Option<Vec<u8>>,
+    },
+    Commands,
+    CommandsDocs,
+    ClientSetinfo,
     Get {
         key: Vec<u8>,
     },
