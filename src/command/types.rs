@@ -14,6 +14,8 @@ pub enum Command {
     Info {
         section: Option<Vec<u8>>,
     },
+    CommandList,
+    CommandDocs,
     Get {
         key: Vec<u8>,
     },

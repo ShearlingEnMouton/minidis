@@ -105,6 +105,11 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("info")),
             },
+            b"COMMAND" => match args.len() {
+                1 => Ok(Command::CommandList),
+                _ if args[1].eq_ignore_ascii_case(b"DOCS") => Ok(Command::CommandDocs),
+                _ => Err(CommandError::unknown_command(args)),
+            },
             b"GET" => match args.len() {
                 2 => Ok(Command::Get {
                     key: args[1].clone(),
@@ -330,6 +335,8 @@ impl Command {
                 Reply::Error("NOPROTO unsupported protocol version".to_owned())
             }
             Command::Info { section } => Reply::Bulk(Self::info_text(section.as_deref())),
+            Command::CommandList => Reply::Array(Vec::new()),
+            Command::CommandDocs => Reply::Map(Vec::new()),
             Command::Get { key } => match store.get(&key) {
                 Ok(None) => Reply::Nil,
                 Ok(Some(value)) => Reply::Bulk(value),
