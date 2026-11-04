@@ -110,6 +110,14 @@ impl Command {
                 _ if args[1].eq_ignore_ascii_case(b"DOCS") => Ok(Command::CommandDocs),
                 _ => Err(CommandError::unknown_command(args)),
             },
+            b"CLIENT" => match args.len() {
+                1 => Err(CommandError::WrongArity("client")),
+                _ if args[1].eq_ignore_ascii_case(b"SETINFO") => match args.len() {
+                    4 => Ok(Command::ClientSetinfo),
+                    _ => Err(CommandError::WrongArity("client|setinfo")),
+                },
+                _ => Err(CommandError::unknown_command(args)),
+            },
             b"GET" => match args.len() {
                 2 => Ok(Command::Get {
                     key: args[1].clone(),
@@ -337,6 +345,7 @@ impl Command {
             Command::Info { section } => Reply::Bulk(Self::info_text(section.as_deref())),
             Command::CommandList => Reply::Array(Vec::new()),
             Command::CommandDocs => Reply::Map(Vec::new()),
+            Command::ClientSetinfo => Reply::Simple("OK"),
             Command::Get { key } => match store.get(&key) {
                 Ok(None) => Reply::Nil,
                 Ok(Some(value)) => Reply::Bulk(value),

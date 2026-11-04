@@ -16,6 +16,7 @@ pub enum Command {
     },
     CommandList,
     CommandDocs,
+    ClientSetinfo,
     Get {
         key: Vec<u8>,
     },
