@@ -106,8 +106,8 @@ impl Command {
                 _ => Err(CommandError::WrongArity("info")),
             },
             b"COMMAND" => match args.len() {
-                1 => Ok(Command::CommandList),
-                _ if args[1].eq_ignore_ascii_case(b"DOCS") => Ok(Command::CommandDocs),
+                1 => Ok(Command::Commands),
+                _ if args[1].eq_ignore_ascii_case(b"DOCS") => Ok(Command::CommandsDocs),
                 _ => Err(CommandError::unknown_command(args)),
             },
             b"CLIENT" => match args.len() {
@@ -343,8 +343,8 @@ impl Command {
                 Reply::Error("NOPROTO unsupported protocol version".to_owned())
             }
             Command::Info { section } => Reply::Bulk(Self::info_text(section.as_deref())),
-            Command::CommandList => Reply::Array(Vec::new()),
-            Command::CommandDocs => Reply::Map(Vec::new()),
+            Command::Commands => Reply::Array(Vec::new()),
+            Command::CommandsDocs => Reply::Map(Vec::new()),
             Command::ClientSetinfo => Reply::Simple("OK"),
             Command::Get { key } => match store.get(&key) {
                 Ok(None) => Reply::Nil,
@@ -645,6 +645,109 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn hello_takes_an_optional_protocol_version() {
+        assert!(matches!(
+            parse(&["HELLO"]),
+            Ok(Command::Hello { protover: None })
+        ));
+        assert!(matches!(
+            parse(&["HELLO", "2"]),
+            Ok(Command::Hello {
+                protover: Some(Protocol::Resp2)
+            })
+        ));
+        assert!(matches!(
+            parse(&["hello", "3"]),
+            Ok(Command::Hello {
+                protover: Some(Protocol::Resp3)
+            })
+        ));
+        for version in ["0", "1", "4", "-3"] {
+            assert!(
+                matches!(parse(&["HELLO", version]), Err(CommandError::NoProto)),
+                "{version}"
+            );
+        }
+        assert!(matches!(
+            parse(&["HELLO", "3", "extra"]),
+            Err(CommandError::WrongArity("hello"))
+        ));
+    }
+
+    #[test]
+    fn info_takes_an_optional_section() {
+        assert!(matches!(
+            parse(&["INFO"]),
+            Ok(Command::Info { section: None })
+        ));
+        assert!(matches!(
+            parse(&["INFO", "server"]),
+            Ok(Command::Info { section: Some(s) }) if s == b"server"
+        ));
+        assert!(matches!(
+            parse(&["INFO", "a", "b"]),
+            Err(CommandError::WrongArity("info"))
+        ));
+    }
+
+    #[test]
+    fn command_takes_no_arguments_or_docs() {
+        assert!(matches!(parse(&["COMMAND"]), Ok(Command::Commands)));
+        for parts in [
+            &["COMMAND", "DOCS"][..],
+            &["command", "docs"][..],
+            &["COMMAND", "DOCS", "get", "set"][..],
+        ] {
+            assert!(
+                matches!(parse(parts), Ok(Command::CommandsDocs)),
+                "{parts:?}"
+            );
+        }
+        assert!(matches!(
+            parse(&["COMMAND", "COUNT"]),
+            Err(CommandError::UnknownCommand { .. })
+        ));
+    }
+
+    #[test]
+    fn client_accepts_only_setinfo() {
+        for parts in [
+            &["CLIENT", "SETINFO", "LIB-NAME", "redis-py"][..],
+            &["client", "setinfo", "LIB-VER", "1.0"][..],
+        ] {
+            assert!(
+                matches!(parse(parts), Ok(Command::ClientSetinfo)),
+                "{parts:?}"
+            );
+        }
+        assert!(matches!(
+            parse(&["CLIENT"]),
+            Err(CommandError::WrongArity("client"))
+        ));
+        assert!(matches!(
+            parse(&["CLIENT", "SETINFO", "LIB-NAME"]),
+            Err(CommandError::WrongArity("client|setinfo"))
+        ));
+        assert!(matches!(
+            parse(&["CLIENT", "ID"]),
+            Err(CommandError::UnknownCommand { .. })
+        ));
+    }
+
+    #[test]
+    fn handshake_commands_are_not_writes() {
+        for parts in [
+            &["HELLO"][..],
+            &["INFO"][..],
+            &["COMMAND"][..],
+            &["COMMAND", "DOCS"][..],
+            &["CLIENT", "SETINFO", "LIB-NAME", "x"][..],
+        ] {
+            assert!(!parse(parts).unwrap().is_write(), "{parts:?}");
+        }
+    }
+
     #[cfg(feature = "full")]
     #[test]
     fn wrong_argument_counts_are_rejected() {
@@ -780,15 +883,23 @@ mod tests {
 mod execute_tests {
     use super::*;
 
-    fn run(store: &Store, parts: &[&str]) -> String {
+    fn run_with(store: &Store, parts: &[&str], protocol: &Protocol) -> String {
         let args: Vec<Vec<u8>> = parts.iter().map(|p| p.as_bytes().to_vec()).collect();
         let reply = match Command::from_args(&args) {
             Ok(cmd) => cmd.execute(store),
             Err(e) => Reply::from(e),
         };
         let mut out = Vec::new();
-        reply.encode(&mut out, &Protocol::Resp2);
+        reply.encode(&mut out, protocol);
         String::from_utf8(out).unwrap()
+    }
+
+    fn run(store: &Store, parts: &[&str]) -> String {
+        run_with(store, parts, &Protocol::Resp2)
+    }
+
+    fn bulk(text: &str) -> String {
+        format!("${}\r\n{}\r\n", text.len(), text)
     }
 
     #[cfg(feature = "full")]
@@ -991,6 +1102,85 @@ mod execute_tests {
         run(&store, &["RPUSH", "l", "a"]);
         run(&store, &["HSET", "h", "f", "v"]);
         assert_eq!(run(&store, &["DBSIZE"]), ":3\r\n");
+    }
+
+    #[test]
+    fn nil_replies_depend_on_the_protocol() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["GET", "k"]), "$-1\r\n");
+        assert_eq!(run_with(&store, &["GET", "k"], &Protocol::Resp3), "_\r\n");
+    }
+
+    #[test]
+    fn info_replies_with_the_requested_section() {
+        let store = Store::new();
+        let server = format!(
+            "# Server\r\nminidis_version:{}\r\nredis_mode:standalone\r\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        let persistence = "# Persistence\r\nloading:0\r\n";
+        assert_eq!(
+            run(&store, &["INFO"]),
+            bulk(&format!("{server}\r\n{persistence}"))
+        );
+        assert_eq!(run(&store, &["INFO", "server"]), bulk(&server));
+        assert_eq!(run(&store, &["INFO", "PERSISTENCE"]), bulk(persistence));
+        assert_eq!(run(&store, &["INFO", "nope"]), "$0\r\n\r\n");
+    }
+
+    #[test]
+    fn command_replies_are_empty() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["COMMAND"]), "*0\r\n");
+        assert_eq!(run(&store, &["COMMAND", "DOCS"]), "*0\r\n");
+        assert_eq!(run_with(&store, &["COMMAND"], &Protocol::Resp3), "*0\r\n");
+        assert_eq!(
+            run_with(&store, &["COMMAND", "DOCS"], &Protocol::Resp3),
+            "%0\r\n"
+        );
+    }
+
+    #[test]
+    fn client_setinfo_replies_ok() {
+        let store = Store::new();
+        assert_eq!(
+            run(&store, &["CLIENT", "SETINFO", "LIB-NAME", "redis-py"]),
+            "+OK\r\n"
+        );
+        assert_eq!(
+            run(&store, &["CLIENT", "SETINFO", "LIB-VER", "8.1.0"]),
+            "+OK\r\n"
+        );
+    }
+
+    #[test]
+    fn hello_with_an_unsupported_version_replies_noproto() {
+        let store = Store::new();
+        for version in ["1", "4"] {
+            assert_eq!(
+                run(&store, &["HELLO", version]),
+                "-NOPROTO unsupported protocol version\r\n"
+            );
+        }
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn hgetall_replies_as_a_map_in_resp3() {
+        let store = Store::new();
+        run(&store, &["HSET", "h", "f", "v"]);
+        assert_eq!(
+            run(&store, &["HGETALL", "h"]),
+            "*2\r\n$1\r\nf\r\n$1\r\nv\r\n"
+        );
+        assert_eq!(
+            run_with(&store, &["HGETALL", "h"], &Protocol::Resp3),
+            "%1\r\n$1\r\nf\r\n$1\r\nv\r\n"
+        );
+        assert_eq!(
+            run_with(&store, &["HGETALL", "missing"], &Protocol::Resp3),
+            "%0\r\n"
+        );
     }
 
     #[cfg(not(feature = "full"))]

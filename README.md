@@ -2,7 +2,7 @@
 
 [![codecov](https://codecov.io/gh/ShearlingEnMouton/minidis/graph/badge.svg)](https://codecov.io/gh/ShearlingEnMouton/minidis)
 
-minidis is a small Redis-compatible server written in Rust. It speaks RESP2 over TCP, so `redis-cli` and most Redis client libraries can connect to it. It is a learning project and implements a limited set of Redis commands, not all of them.
+minidis is a small Redis-compatible server written in Rust. It speaks RESP2 and RESP3 over TCP, so `redis-cli` and common Redis client libraries can connect to it. See [Client compatibility](#client-compatibility). It is a learning project and implements a limited set of Redis commands, not all of them.
 
 What it does:
 
@@ -16,24 +16,65 @@ What it does:
 
 | Group | Commands |
 | --- | --- |
-| Connection | `PING [message]` |
+| Connection | `PING [message]`, `HELLO [protover]`, `CLIENT SETINFO attribute value` |
 | Strings | `GET`, `SET key value [EX seconds \| PX milliseconds \| EXAT unix-seconds \| PXAT unix-milliseconds]` |
 | Keys | `DEL key [key ...]`, `TYPE`, `DBSIZE` |
 | Expiry | `TTL`, `PTTL`, `EXPIRE`, `PEXPIRE`, `PEXPIREAT`, `PERSIST` |
 | Lists | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE` |
 | Hashes | `HSET`, `HGET`, `HDEL`, `HLEN`, `HEXISTS`, `HGETALL` |
-| Server | `REWRITEAOF` |
+| Server | `INFO [section]`, `COMMAND`, `COMMAND DOCS`, `REWRITEAOF` |
 
 Using a command on a key of the wrong type returns `WRONGTYPE`, like Redis does.
 
+`HELLO`, `INFO`, `COMMAND` and `CLIENT SETINFO` exist so that clients can complete their connection handshake, and their replies are fixed or empty:
+
+- `INFO` has two sections, `server` and `persistence`. `persistence` always reports `loading:0`, because the server accepts connections only after the AOF has been replayed. An unknown section returns an empty reply.
+- `COMMAND` returns an empty array and `COMMAND DOCS` returns an empty map.
+- `CLIENT SETINFO` returns `OK` for any attribute and does not store the value.
+- Other `CLIENT` and `COMMAND` subcommands are rejected as unknown commands.
+
 Not supported:
 
-- Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, and the count argument of `LPOP`/`RPOP`
+- Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `HELLO ... AUTH/SETNAME`, and the count argument of `LPOP`/`RPOP`
 - Authentication, replication, pub/sub, transactions, and multiple databases
+
+## Client compatibility
+
+Every connection starts in RESP2. `HELLO 3` switches the connection to RESP3 and `HELLO 2` switches it back. The reply to `HELLO` is already encoded in the new protocol. `HELLO` without a version returns the same reply and keeps the current protocol. Any other version returns `-NOPROTO unsupported protocol version` and keeps the current protocol. The protocol is set per connection and does not affect other clients.
+
+The reply to `HELLO` is a map with the following fields. In RESP2 it is sent as a flat array of keys and values.
+
+| Field | Value |
+| --- | --- |
+| `server` | `minidis` |
+| `version` | The minidis version |
+| `proto` | `2` or `3`, the protocol of the connection |
+| `id` | A number unique to the connection |
+| `mode` | `standalone` |
+| `role` | `master` |
+| `modules` | An empty array |
+
+Requests have the same format in both protocols. Only two kinds of replies differ:
+
+| Reply | RESP2 | RESP3 |
+| --- | --- | --- |
+| Missing value, for example `GET` on a missing key | Null bulk string (`$-1`) | Null (`_`) |
+| `HGETALL` | Flat array of fields and values (`*`) | Map (`%`) |
+
+The following client libraries were checked with their default settings:
+
+| Client | Version | Commands sent on connect |
+| --- | --- | --- |
+| redis-py | 8.1.0 | `HELLO 3`, `CLIENT MAINT_NOTIFICATIONS`, `CLIENT SETINFO` |
+| ioredis | 6.0.0 | `HELLO 3`, `CLIENT SETINFO`, `INFO` |
+
+redis-py ignores the error returned for `CLIENT MAINT_NOTIFICATIONS`. ioredis sends `INFO` as a ready check and waits until `loading` is `0`.
+
+In interactive mode, `redis-cli` sends `COMMAND DOCS`, `INFO SERVER` and `COMMAND` on connect. A single command, such as `redis-cli ping`, sends only that command.
 
 ## Lite build
 
-The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`. Every other command is rejected as an unknown command.
+The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`, plus the handshake commands `HELLO`, `INFO`, `COMMAND`, `COMMAND DOCS` and `CLIENT SETINFO`, so clients connect to it in the same way. RESP3 is available in both builds. Every other command is rejected as an unknown command.
 
 The list, hash and expiry code is removed at compile time, not filtered at runtime. It is behind the Cargo feature `full`, which is on by default. The lite build turns the feature off:
 
@@ -230,7 +271,7 @@ The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` f
 | Path | Contents |
 | --- | --- |
 | `src/main.rs` | Startup, environment settings, client connections |
-| `src/resp.rs` | RESP2 reader |
+| `src/resp.rs` | Request reader (requests are the same in RESP2 and RESP3) |
 | `src/command.rs`, `src/command/` | Command parsing, execution and replies |
 | `src/store.rs` | In-memory store, expiry index, snapshots |
 | `src/aof.rs` | AOF append, replay, fsync and rewrite |

@@ -86,3 +86,74 @@ impl From<CommandError> for Reply {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encode(reply: &Reply, protocol: &Protocol) -> String {
+        let mut out = Vec::new();
+        reply.encode(&mut out, protocol);
+        String::from_utf8(out).unwrap()
+    }
+
+    fn sample_map() -> Reply {
+        Reply::Map(vec![
+            (Reply::Bulk(b"a".to_vec()), Reply::Integer(1)),
+            (Reply::Bulk(b"b".to_vec()), Reply::Nil),
+        ])
+    }
+
+    #[test]
+    fn nil_encodes_per_protocol() {
+        assert_eq!(encode(&Reply::Nil, &Protocol::Resp2), "$-1\r\n");
+        assert_eq!(encode(&Reply::Nil, &Protocol::Resp3), "_\r\n");
+    }
+
+    #[test]
+    fn scalar_replies_are_the_same_in_both_protocols() {
+        for protocol in [Protocol::Resp2, Protocol::Resp3] {
+            assert_eq!(encode(&Reply::Simple("OK"), &protocol), "+OK\r\n");
+            assert_eq!(
+                encode(&Reply::Error("ERR x".to_owned()), &protocol),
+                "-ERR x\r\n"
+            );
+            assert_eq!(encode(&Reply::Integer(-7), &protocol), ":-7\r\n");
+            assert_eq!(
+                encode(&Reply::Bulk(b"ab".to_vec()), &protocol),
+                "$2\r\nab\r\n"
+            );
+            let array = Reply::Array(vec![Reply::Integer(1), Reply::Bulk(b"a".to_vec())]);
+            assert_eq!(encode(&array, &protocol), "*2\r\n:1\r\n$1\r\na\r\n");
+        }
+    }
+
+    #[test]
+    fn map_is_a_flat_array_in_resp2_and_a_map_in_resp3() {
+        assert_eq!(
+            encode(&sample_map(), &Protocol::Resp2),
+            "*4\r\n$1\r\na\r\n:1\r\n$1\r\nb\r\n$-1\r\n"
+        );
+        assert_eq!(
+            encode(&sample_map(), &Protocol::Resp3),
+            "%2\r\n$1\r\na\r\n:1\r\n$1\r\nb\r\n_\r\n"
+        );
+    }
+
+    #[test]
+    fn nil_inside_an_array_follows_the_protocol() {
+        let reply = Reply::Array(vec![Reply::Nil, Reply::Bulk(b"a".to_vec())]);
+        assert_eq!(encode(&reply, &Protocol::Resp2), "*2\r\n$-1\r\n$1\r\na\r\n");
+        assert_eq!(encode(&reply, &Protocol::Resp3), "*2\r\n_\r\n$1\r\na\r\n");
+    }
+
+    #[test]
+    fn empty_array_and_empty_map() {
+        assert_eq!(
+            encode(&Reply::Array(Vec::new()), &Protocol::Resp3),
+            "*0\r\n"
+        );
+        assert_eq!(encode(&Reply::Map(Vec::new()), &Protocol::Resp2), "*0\r\n");
+        assert_eq!(encode(&Reply::Map(Vec::new()), &Protocol::Resp3), "%0\r\n");
+    }
+}

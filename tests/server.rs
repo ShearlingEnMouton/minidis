@@ -718,3 +718,145 @@ fn healthcheck_fails_on_an_unexpected_reply() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected PING reply"));
 }
+
+fn hello_id(reply: &str) -> u64 {
+    reply
+        .split("$2\r\nid\r\n:")
+        .nth(1)
+        .and_then(|rest| rest.split("\r\n").next())
+        .unwrap_or_else(|| panic!("no id in {reply:?}"))
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn hello_3_switches_the_connection_to_resp3_and_hello_2_switches_back() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    assert_eq!(send(&mut c, &["GET", "missing"]), "$-1\r\n");
+
+    let reply = send(&mut c, &["HELLO", "3"]);
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(reply.starts_with("%7\r\n"), "{reply:?}");
+    for part in [
+        "$6\r\nserver\r\n$7\r\nminidis\r\n".to_owned(),
+        format!("$7\r\nversion\r\n${}\r\n{version}\r\n", version.len()),
+        "$5\r\nproto\r\n:3\r\n".to_owned(),
+        "$4\r\nmode\r\n$10\r\nstandalone\r\n".to_owned(),
+        "$4\r\nrole\r\n$6\r\nmaster\r\n".to_owned(),
+        "$7\r\nmodules\r\n*0\r\n".to_owned(),
+    ] {
+        assert!(reply.contains(&part), "{part:?} missing from {reply:?}");
+    }
+    hello_id(&reply);
+    assert_eq!(send(&mut c, &["GET", "missing"]), "_\r\n");
+
+    let reply = send(&mut c, &["HELLO", "2"]);
+    assert!(reply.starts_with("*14\r\n"), "{reply:?}");
+    assert!(reply.contains("$5\r\nproto\r\n:2\r\n"), "{reply:?}");
+    assert_eq!(send(&mut c, &["GET", "missing"]), "$-1\r\n");
+}
+
+#[test]
+fn hello_without_a_version_keeps_the_current_protocol() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    let reply = send(&mut c, &["HELLO"]);
+    assert!(reply.starts_with("*14\r\n"), "{reply:?}");
+    assert!(reply.contains("$5\r\nproto\r\n:2\r\n"), "{reply:?}");
+
+    send(&mut c, &["HELLO", "3"]);
+    let reply = send(&mut c, &["HELLO"]);
+    assert!(reply.starts_with("%7\r\n"), "{reply:?}");
+    assert!(reply.contains("$5\r\nproto\r\n:3\r\n"), "{reply:?}");
+    assert_eq!(send(&mut c, &["GET", "missing"]), "_\r\n");
+}
+
+#[test]
+fn hello_with_an_unsupported_version_replies_noproto_and_keeps_the_protocol() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    let noproto = "-NOPROTO unsupported protocol version\r\n";
+
+    assert_eq!(send(&mut c, &["HELLO", "4"]), noproto);
+    assert_eq!(send(&mut c, &["GET", "missing"]), "$-1\r\n");
+
+    send(&mut c, &["HELLO", "3"]);
+    assert_eq!(send(&mut c, &["HELLO", "4"]), noproto);
+    assert_eq!(send(&mut c, &["GET", "missing"]), "_\r\n");
+}
+
+#[test]
+fn the_protocol_and_the_client_id_belong_to_the_connection() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut a = server.connect();
+    let mut b = server.connect();
+
+    let id_a = hello_id(&send(&mut a, &["HELLO", "3"]));
+    let id_b = hello_id(&send(&mut b, &["HELLO", "2"]));
+    assert_ne!(id_a, id_b);
+    assert_eq!(send(&mut a, &["GET", "missing"]), "_\r\n");
+    assert_eq!(send(&mut b, &["GET", "missing"]), "$-1\r\n");
+}
+
+#[cfg(feature = "full")]
+#[test]
+fn hgetall_replies_as_a_map_after_hello_3() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    assert_eq!(send(&mut c, &["HSET", "h", "f", "v"]), ":1\r\n");
+    assert_eq!(
+        send(&mut c, &["HGETALL", "h"]),
+        "*2\r\n$1\r\nf\r\n$1\r\nv\r\n"
+    );
+    send(&mut c, &["HELLO", "3"]);
+    assert_eq!(
+        send(&mut c, &["HGETALL", "h"]),
+        "%1\r\n$1\r\nf\r\n$1\r\nv\r\n"
+    );
+}
+
+#[test]
+fn info_reports_that_the_server_is_not_loading() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    let all = send(&mut c, &["INFO"]);
+    assert!(all.starts_with('$'), "{all:?}");
+    assert!(all.contains("# Server\r\n"), "{all:?}");
+    assert!(all.contains("# Persistence\r\nloading:0\r\n"), "{all:?}");
+
+    let server_only = send(&mut c, &["INFO", "server"]);
+    assert!(server_only.contains("# Server\r\n"), "{server_only:?}");
+    assert!(!server_only.contains("loading"), "{server_only:?}");
+}
+
+#[test]
+fn client_handshake_commands_are_accepted() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    assert_eq!(
+        send(&mut c, &["CLIENT", "SETINFO", "LIB-NAME", "redis-py"]),
+        "+OK\r\n"
+    );
+    assert_eq!(
+        send(&mut c, &["CLIENT", "SETINFO", "LIB-VER", "8.1.0"]),
+        "+OK\r\n"
+    );
+    assert_eq!(send(&mut c, &["COMMAND"]), "*0\r\n");
+    assert_eq!(send(&mut c, &["COMMAND", "DOCS"]), "*0\r\n");
+    send(&mut c, &["HELLO", "3"]);
+    assert_eq!(send(&mut c, &["COMMAND", "DOCS"]), "%0\r\n");
+    assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
+}
