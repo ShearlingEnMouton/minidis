@@ -13,6 +13,8 @@ mod expiry;
 #[cfg(feature = "full")]
 mod hash;
 #[cfg(feature = "full")]
+mod keys;
+#[cfg(feature = "full")]
 mod list;
 #[cfg(feature = "full")]
 mod string;

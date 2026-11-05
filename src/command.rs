@@ -72,6 +72,38 @@ impl Command {
         })
     }
 
+    #[cfg(feature = "full")]
+    fn scan_command(args: &[Vec<u8>]) -> Result<Command, CommandError> {
+        if args.len() < 2 {
+            return Err(CommandError::WrongArity("scan"));
+        }
+        let cursor = std::str::from_utf8(&args[1])
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .ok_or(CommandError::InvalidCursor)?;
+        let mut pattern = None;
+        let mut count = 10;
+        let mut options = args[2..].iter();
+        while let Some(option) = options.next() {
+            let value = options.next().ok_or(CommandError::SyntaxError)?;
+            match option.to_ascii_uppercase().as_slice() {
+                b"MATCH" => pattern = Some(value.clone()),
+                b"COUNT" => {
+                    count = match Self::parse_int(value)? {
+                        n if n >= 1 => n as usize,
+                        _ => return Err(CommandError::SyntaxError),
+                    }
+                }
+                _ => return Err(CommandError::SyntaxError),
+            }
+        }
+        Ok(Command::Scan {
+            cursor,
+            pattern,
+            count,
+        })
+    }
+
     pub fn from_args(args: &[Vec<u8>]) -> Result<Command, CommandError> {
         let name = args.first().ok_or(CommandError::WrongArity(""))?;
 
@@ -218,6 +250,15 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("decr")),
             },
+            #[cfg(feature = "full")]
+            b"KEYS" => match args.len() {
+                2 => Ok(Command::Keys {
+                    pattern: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("keys")),
+            },
+            #[cfg(feature = "full")]
+            b"SCAN" => Self::scan_command(args),
             #[cfg(feature = "full")]
             b"TTL" => match args.len() {
                 2 => Ok(Command::Ttl {
@@ -457,6 +498,22 @@ impl Command {
                 Ok(n) => Reply::Integer(n),
                 Err(e) => CommandError::from(e).into(),
             },
+            #[cfg(feature = "full")]
+            Command::Keys { pattern } => {
+                Reply::Array(store.keys(&pattern).into_iter().map(Reply::Bulk).collect())
+            }
+            #[cfg(feature = "full")]
+            Command::Scan {
+                cursor,
+                pattern,
+                count,
+            } => {
+                let (next, keys) = store.scan(cursor, pattern.as_deref(), count);
+                Reply::Array(vec![
+                    Reply::Bulk(next.to_string().into_bytes()),
+                    Reply::Array(keys.into_iter().map(Reply::Bulk).collect()),
+                ])
+            }
             #[cfg(feature = "full")]
             Command::Ttl { key } => match store.ttl(&key) {
                 TtlStatus::NoKey => Reply::Integer(-2),

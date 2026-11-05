@@ -60,6 +60,16 @@ pub enum Command {
         key: Vec<u8>,
     },
     #[cfg(feature = "full")]
+    Keys {
+        pattern: Vec<u8>,
+    },
+    #[cfg(feature = "full")]
+    Scan {
+        cursor: u64,
+        pattern: Option<Vec<u8>>,
+        count: usize,
+    },
+    #[cfg(feature = "full")]
     Ttl {
         key: Vec<u8>,
     },
