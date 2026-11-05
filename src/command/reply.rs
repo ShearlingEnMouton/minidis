@@ -83,6 +83,10 @@ impl From<CommandError> for Reply {
             CommandError::NoProto => {
                 Reply::Error("NOPROTO unsupported protocol version".to_owned())
             }
+            #[cfg(feature = "full")]
+            CommandError::Overflow => {
+                Reply::Error("ERR increment or decrement would overflow".to_owned())
+            }
         }
     }
 }

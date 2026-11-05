@@ -14,11 +14,17 @@ pub enum CommandError {
     SyntaxError,
     WrongType,
     NoProto,
+    #[cfg(feature = "full")]
+    Overflow,
 }
 impl From<StoreError> for CommandError {
     fn from(e: StoreError) -> Self {
         match e {
             StoreError::WrongType => CommandError::WrongType,
+            #[cfg(feature = "full")]
+            StoreError::NotAnInteger => CommandError::NotAnInteger,
+            #[cfg(feature = "full")]
+            StoreError::Overflow => CommandError::Overflow,
         }
     }
 }

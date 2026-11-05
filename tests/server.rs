@@ -491,6 +491,13 @@ fn lite_rejects_full_only_commands() {
         &["TYPE", "k"][..],
         &["DBSIZE"][..],
         &["REWRITEAOF"][..],
+        &["EXISTS", "k"][..],
+        &["SETNX", "k", "v"][..],
+        &["MSET", "k", "v"][..],
+        &["MGET", "k"][..],
+        &["APPEND", "k", "v"][..],
+        &["INCR", "k"][..],
+        &["DECR", "k"][..],
     ] {
         let reply = send(&mut c, parts);
         assert!(
@@ -859,4 +866,38 @@ fn client_handshake_commands_are_accepted() {
     send(&mut c, &["HELLO", "3"]);
     assert_eq!(send(&mut c, &["COMMAND", "DOCS"]), "%0\r\n");
     assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
+}
+
+#[cfg(feature = "full")]
+#[test]
+fn string_commands_survive_a_restart_and_keep_ttls() {
+    let dir = TempDir::new();
+    let mut server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    assert_eq!(send(&mut c, &["SETNX", "a", "1"]), ":1\r\n");
+    assert_eq!(send(&mut c, &["SETNX", "a", "2"]), ":0\r\n");
+    assert_eq!(send(&mut c, &["MSET", "b", "x", "c", "y"]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["APPEND", "b", "z"]), ":2\r\n");
+    assert_eq!(send(&mut c, &["INCR", "n"]), ":1\r\n");
+    assert_eq!(send(&mut c, &["INCR", "n"]), ":2\r\n");
+    assert_eq!(send(&mut c, &["DECR", "n"]), ":1\r\n");
+    assert_eq!(send(&mut c, &["SET", "t", "5", "EX", "100"]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["INCR", "t"]), ":6\r\n");
+    assert_eq!(send(&mut c, &["APPEND", "t", "0"]), ":2\r\n");
+    assert!(send(&mut c, &["INCR", "b"]).starts_with("-ERR value is not an integer"));
+    drop(c);
+    server.stop();
+
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    assert_eq!(
+        send(&mut c, &["MGET", "a", "b", "c", "n", "t"]),
+        "*5\r\n$1\r\n1\r\n$2\r\nxz\r\n$1\r\ny\r\n$1\r\n1\r\n$2\r\n60\r\n"
+    );
+    let ttl = integer(&send(&mut c, &["TTL", "t"]));
+    assert!(ttl > 0 && ttl <= 100, "{ttl}");
+    assert_eq!(
+        send(&mut c, &["EXISTS", "a", "b", "t", "missing"]),
+        ":3\r\n"
+    );
 }

@@ -163,6 +163,62 @@ impl Command {
                 _ => Err(CommandError::WrongArity("del")),
             },
             #[cfg(feature = "full")]
+            b"EXISTS" => match args.len() {
+                2.. => Ok(Command::Exists {
+                    keys: args[1..].to_vec(),
+                }),
+                _ => Err(CommandError::WrongArity("exists")),
+            },
+            #[cfg(feature = "full")]
+            b"SETNX" => match args.len() {
+                3 => Ok(Command::Setnx {
+                    key: args[1].clone(),
+                    value: args[2].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("setnx")),
+            },
+            #[cfg(feature = "full")]
+            b"MSET" => match args.len() {
+                n if n >= 3 && n % 2 == 1 => Ok(Command::Mset {
+                    pairs: args[1..]
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|p| (p[0].clone(), p[1].clone()))
+                        .collect(),
+                }),
+                _ => Err(CommandError::WrongArity("mset")),
+            },
+            #[cfg(feature = "full")]
+            b"MGET" => match args.len() {
+                2.. => Ok(Command::Mget {
+                    keys: args[1..].to_vec(),
+                }),
+                _ => Err(CommandError::WrongArity("mget")),
+            },
+            #[cfg(feature = "full")]
+            b"APPEND" => match args.len() {
+                3 => Ok(Command::Append {
+                    key: args[1].clone(),
+                    value: args[2].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("append")),
+            },
+            #[cfg(feature = "full")]
+            b"INCR" => match args.len() {
+                2 => Ok(Command::Incr {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("incr")),
+            },
+            #[cfg(feature = "full")]
+            b"DECR" => match args.len() {
+                2 => Ok(Command::Decr {
+                    key: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("decr")),
+            },
+            #[cfg(feature = "full")]
             b"TTL" => match args.len() {
                 2 => Ok(Command::Ttl {
                     key: args[1].clone(),
@@ -370,6 +426,38 @@ impl Command {
                 Reply::Integer(removed as i64)
             }
             #[cfg(feature = "full")]
+            Command::Exists { keys } => Reply::Integer(store.exists(&keys) as i64),
+            #[cfg(feature = "full")]
+            Command::Setnx { key, value } => Reply::Integer(store.setnx(key, value) as i64),
+            #[cfg(feature = "full")]
+            Command::Mset { pairs } => {
+                store.mset(pairs);
+                Reply::Simple("OK")
+            }
+            #[cfg(feature = "full")]
+            Command::Mget { keys } => Reply::Array(
+                store
+                    .mget(&keys)
+                    .into_iter()
+                    .map(|v| v.map_or(Reply::Nil, Reply::Bulk))
+                    .collect(),
+            ),
+            #[cfg(feature = "full")]
+            Command::Append { key, value } => match store.append(key, value) {
+                Ok(len) => Reply::Integer(len as i64),
+                Err(e) => CommandError::from(e).into(),
+            },
+            #[cfg(feature = "full")]
+            Command::Incr { key } => match store.incr_by(key, 1) {
+                Ok(n) => Reply::Integer(n),
+                Err(e) => CommandError::from(e).into(),
+            },
+            #[cfg(feature = "full")]
+            Command::Decr { key } => match store.incr_by(key, -1) {
+                Ok(n) => Reply::Integer(n),
+                Err(e) => CommandError::from(e).into(),
+            },
+            #[cfg(feature = "full")]
             Command::Ttl { key } => match store.ttl(&key) {
                 TtlStatus::NoKey => Reply::Integer(-2),
                 TtlStatus::NoExpiry => Reply::Integer(-1),
@@ -479,7 +567,12 @@ impl Command {
             | Command::Lpop { .. }
             | Command::Rpop { .. }
             | Command::Hset { .. }
-            | Command::Hdel { .. } => true,
+            | Command::Hdel { .. }
+            | Command::Setnx { .. }
+            | Command::Mset { .. }
+            | Command::Append { .. }
+            | Command::Incr { .. }
+            | Command::Decr { .. } => true,
             _ => false,
         }
     }
@@ -780,6 +873,52 @@ mod tests {
 
     #[cfg(feature = "full")]
     #[test]
+    fn string_commands_check_their_argument_counts() {
+        assert!(matches!(
+            parse(&["EXISTS", "a", "a"]),
+            Ok(Command::Exists { keys }) if keys.len() == 2
+        ));
+        assert!(matches!(
+            parse(&["MGET", "a", "b"]),
+            Ok(Command::Mget { keys }) if keys.len() == 2
+        ));
+        assert!(matches!(
+            parse(&["SETNX", "k", "v"]),
+            Ok(Command::Setnx { .. })
+        ));
+        assert!(matches!(
+            parse(&["APPEND", "k", "v"]),
+            Ok(Command::Append { .. })
+        ));
+        assert!(matches!(parse(&["INCR", "k"]), Ok(Command::Incr { .. })));
+        assert!(matches!(parse(&["decr", "k"]), Ok(Command::Decr { .. })));
+        assert!(matches!(
+            parse(&["MSET", "a", "1", "b", "2"]),
+            Ok(Command::Mset { pairs })
+                if pairs == vec![(b"a".to_vec(), b"1".to_vec()), (b"b".to_vec(), b"2".to_vec())]
+        ));
+        for (parts, name) in [
+            (&["EXISTS"][..], "exists"),
+            (&["MGET"][..], "mget"),
+            (&["SETNX", "k"][..], "setnx"),
+            (&["SETNX", "k", "v", "x"][..], "setnx"),
+            (&["MSET"][..], "mset"),
+            (&["MSET", "a"][..], "mset"),
+            (&["MSET", "a", "1", "b"][..], "mset"),
+            (&["APPEND", "k"][..], "append"),
+            (&["INCR"][..], "incr"),
+            (&["INCR", "k", "1"][..], "incr"),
+            (&["DECR"][..], "decr"),
+        ] {
+            assert!(
+                matches!(parse(parts), Err(CommandError::WrongArity(n)) if n == name),
+                "{parts:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
     fn is_write_matches_the_commands_that_change_data() {
         for parts in [
             &["SET", "k", "v"][..],
@@ -791,6 +930,11 @@ mod tests {
             &["RPOP", "k"][..],
             &["HSET", "k", "f", "v"][..],
             &["HDEL", "k", "f"][..],
+            &["SETNX", "k", "v"][..],
+            &["MSET", "a", "1"][..],
+            &["APPEND", "k", "v"][..],
+            &["INCR", "k"][..],
+            &["DECR", "k"][..],
         ] {
             assert!(parse(parts).unwrap().is_write(), "{parts:?}");
         }
@@ -801,6 +945,8 @@ mod tests {
             &["HGETALL", "k"][..],
             &["DBSIZE"][..],
             &["REWRITEAOF"][..],
+            &["EXISTS", "k"][..],
+            &["MGET", "k"][..],
         ] {
             assert!(!parse(parts).unwrap().is_write(), "{parts:?}");
         }
@@ -844,6 +990,13 @@ mod tests {
             &["TYPE", "k"][..],
             &["DBSIZE"][..],
             &["REWRITEAOF"][..],
+            &["EXISTS", "k"][..],
+            &["SETNX", "k", "v"][..],
+            &["MSET", "k", "v"][..],
+            &["MGET", "k"][..],
+            &["APPEND", "k", "v"][..],
+            &["INCR", "k"][..],
+            &["DECR", "k"][..],
         ] {
             assert!(
                 matches!(parse(parts), Err(CommandError::UnknownCommand { .. })),
@@ -1180,6 +1333,53 @@ mod execute_tests {
         assert_eq!(
             run_with(&store, &["HGETALL", "missing"], &Protocol::Resp3),
             "%0\r\n"
+        );
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn string_command_replies() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["SETNX", "a", "1"]), ":1\r\n");
+        assert_eq!(run(&store, &["SETNX", "a", "2"]), ":0\r\n");
+        assert_eq!(run(&store, &["MSET", "b", "2", "c", "3"]), "+OK\r\n");
+        assert_eq!(run(&store, &["EXISTS", "a", "b", "missing", "a"]), ":3\r\n");
+        assert_eq!(run(&store, &["APPEND", "a", "xy"]), ":3\r\n");
+        assert_eq!(run(&store, &["GET", "a"]), "$3\r\n1xy\r\n");
+        assert_eq!(run(&store, &["INCR", "n"]), ":1\r\n");
+        assert_eq!(run(&store, &["DECR", "n"]), ":0\r\n");
+        assert_eq!(run(&store, &["DECR", "n"]), ":-1\r\n");
+        run(&store, &["RPUSH", "l", "x"]);
+        assert_eq!(
+            run(&store, &["MGET", "b", "missing", "l"]),
+            "*3\r\n$1\r\n2\r\n$-1\r\n$-1\r\n"
+        );
+        assert_eq!(
+            run_with(&store, &["MGET", "b", "missing"], &Protocol::Resp3),
+            "*2\r\n$1\r\n2\r\n_\r\n"
+        );
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn string_command_errors_match_redis_wording() {
+        let store = Store::new();
+        run(&store, &["SET", "s", "abc"]);
+        run(&store, &["SET", "max", "9223372036854775807"]);
+        run(&store, &["RPUSH", "l", "x"]);
+        assert_eq!(
+            run(&store, &["INCR", "s"]),
+            "-ERR value is not an integer or out of range\r\n"
+        );
+        assert_eq!(
+            run(&store, &["INCR", "max"]),
+            "-ERR increment or decrement would overflow\r\n"
+        );
+        assert_eq!(run(&store, &["INCR", "l"]), WRONGTYPE);
+        assert_eq!(run(&store, &["APPEND", "l", "y"]), WRONGTYPE);
+        assert_eq!(
+            run(&store, &["MSET", "a"]),
+            "-ERR wrong number of arguments for 'mset' command\r\n"
         );
     }
 

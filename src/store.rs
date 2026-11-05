@@ -14,6 +14,8 @@ mod expiry;
 mod hash;
 #[cfg(feature = "full")]
 mod list;
+#[cfg(feature = "full")]
+mod string;
 
 #[cfg(feature = "full")]
 pub use expiry::TtlStatus;
@@ -26,6 +28,10 @@ pub struct Store {
 pub enum StoreError {
     #[cfg_attr(not(feature = "full"), allow(dead_code))]
     WrongType,
+    #[cfg(feature = "full")]
+    NotAnInteger,
+    #[cfg(feature = "full")]
+    Overflow,
 }
 struct Inner {
     data: HashMap<Vec<u8>, Entry>,
@@ -448,6 +454,132 @@ mod tests {
         assert_eq!(store.get(&k("persistent")).unwrap(), Some(k("v")));
         assert_eq!(store.get(&k("later")).unwrap(), Some(k("v")));
         check_invariants(&store);
+    }
+
+    #[test]
+    fn exists_counts_repeated_keys_and_skips_expired_ones() {
+        let store = Store::new();
+        store.set(k("a"), k("1"), None);
+        store.rpush(k("l"), vec![k("x")]).unwrap();
+        store.set(k("old"), k("1"), Some(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(
+            store.exists(&[k("a"), k("a"), k("l"), k("old"), k("missing")]),
+            3
+        );
+        check_invariants(&store);
+    }
+
+    #[test]
+    fn setnx_sets_only_missing_or_expired_keys() {
+        let store = Store::new();
+        assert!(store.setnx(k("a"), k("1")));
+        assert!(!store.setnx(k("a"), k("2")));
+        assert_eq!(store.get(&k("a")).unwrap(), Some(k("1")));
+
+        store.rpush(k("l"), vec![k("x")]).unwrap();
+        assert!(!store.setnx(k("l"), k("v")));
+        assert_eq!(store.key_type(&k("l")), "list");
+
+        store.set(k("old"), k("1"), Some(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(store.setnx(k("old"), k("2")));
+        assert_eq!(store.get(&k("old")).unwrap(), Some(k("2")));
+        assert!(matches!(store.ttl(&k("old")), TtlStatus::NoExpiry));
+        check_invariants(&store);
+    }
+
+    #[test]
+    fn mset_overwrites_any_type_and_clears_ttl() {
+        let store = Store::new();
+        store.set(k("a"), k("old"), Some(Duration::from_secs(100)));
+        store.rpush(k("l"), vec![k("x")]).unwrap();
+        store.mset(vec![(k("a"), k("1")), (k("l"), k("2")), (k("a"), k("3"))]);
+        assert_eq!(store.get(&k("a")).unwrap(), Some(k("3")));
+        assert_eq!(store.get(&k("l")).unwrap(), Some(k("2")));
+        assert!(matches!(store.ttl(&k("a")), TtlStatus::NoExpiry));
+        check_invariants(&store);
+    }
+
+    #[test]
+    fn mget_returns_none_for_missing_expired_and_non_string_keys() {
+        let store = Store::new();
+        store.set(k("a"), k("1"), None);
+        store.rpush(k("l"), vec![k("x")]).unwrap();
+        store.set(k("old"), k("1"), Some(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(
+            store.mget(&[k("a"), k("missing"), k("l"), k("old"), k("a")]),
+            vec![Some(k("1")), None, None, None, Some(k("1"))]
+        );
+        check_invariants(&store);
+    }
+
+    #[test]
+    fn append_creates_extends_and_keeps_the_ttl() {
+        let store = Store::new();
+        assert_eq!(store.append(k("a"), k("ab")).unwrap(), 2);
+        store.expire(&k("a"), Duration::from_secs(100));
+        assert_eq!(store.append(k("a"), k("cde")).unwrap(), 5);
+        assert_eq!(store.get(&k("a")).unwrap(), Some(k("abcde")));
+        assert!(matches!(store.ttl(&k("a")), TtlStatus::Remaining(_)));
+
+        store.rpush(k("l"), vec![k("x")]).unwrap();
+        assert!(matches!(
+            store.append(k("l"), k("y")),
+            Err(StoreError::WrongType)
+        ));
+        check_invariants(&store);
+    }
+
+    #[test]
+    fn incr_by_starts_from_zero_and_keeps_the_ttl() {
+        let store = Store::new();
+        assert_eq!(store.incr_by(k("n"), 1).unwrap(), 1);
+        assert_eq!(store.incr_by(k("n"), -3).unwrap(), -2);
+        assert_eq!(store.get(&k("n")).unwrap(), Some(k("-2")));
+
+        store.set(k("t"), k("10"), Some(Duration::from_secs(100)));
+        assert_eq!(store.incr_by(k("t"), 1).unwrap(), 11);
+        assert!(matches!(store.ttl(&k("t")), TtlStatus::Remaining(_)));
+
+        store.set(k("old"), k("41"), Some(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(store.incr_by(k("old"), 1).unwrap(), 1);
+        assert!(matches!(store.ttl(&k("old")), TtlStatus::NoExpiry));
+        check_invariants(&store);
+    }
+
+    #[test]
+    fn incr_by_rejects_non_integers_overflow_and_wrong_types() {
+        let store = Store::new();
+        store.set(k("s"), k("abc"), None);
+        assert!(matches!(
+            store.incr_by(k("s"), 1),
+            Err(StoreError::NotAnInteger)
+        ));
+        store.set(k("big"), k("99999999999999999999"), None);
+        assert!(matches!(
+            store.incr_by(k("big"), 1),
+            Err(StoreError::NotAnInteger)
+        ));
+        let max = i64::MAX.to_string().into_bytes();
+        store.set(k("max"), max.clone(), None);
+        assert!(matches!(
+            store.incr_by(k("max"), 1),
+            Err(StoreError::Overflow)
+        ));
+        assert_eq!(store.get(&k("max")).unwrap(), Some(max));
+        store.set(k("min"), i64::MIN.to_string().into_bytes(), None);
+        assert!(matches!(
+            store.incr_by(k("min"), -1),
+            Err(StoreError::Overflow)
+        ));
+        store.rpush(k("l"), vec![k("x")]).unwrap();
+        assert!(matches!(
+            store.incr_by(k("l"), 1),
+            Err(StoreError::WrongType)
+        ));
     }
 }
 
