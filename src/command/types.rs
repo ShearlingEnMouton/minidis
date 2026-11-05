@@ -30,6 +30,36 @@ pub enum Command {
         keys: Vec<Vec<u8>>,
     },
     #[cfg(feature = "full")]
+    Exists {
+        keys: Vec<Vec<u8>>,
+    },
+    #[cfg(feature = "full")]
+    Setnx {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    #[cfg(feature = "full")]
+    Mset {
+        pairs: Vec<(Vec<u8>, Vec<u8>)>,
+    },
+    #[cfg(feature = "full")]
+    Mget {
+        keys: Vec<Vec<u8>>,
+    },
+    #[cfg(feature = "full")]
+    Append {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    #[cfg(feature = "full")]
+    Incr {
+        key: Vec<u8>,
+    },
+    #[cfg(feature = "full")]
+    Decr {
+        key: Vec<u8>,
+    },
+    #[cfg(feature = "full")]
     Ttl {
         key: Vec<u8>,
     },
