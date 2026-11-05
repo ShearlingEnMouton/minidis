@@ -1,0 +1,89 @@
+[config]
+default_to_workspace = false
+
+[tasks.help]
+script = '''
+echo "Available commands:"
+echo "  cargo make build      - Build debug version"
+echo "  cargo make release    - Build release version"
+echo "  cargo make build-lite   - Build debug version of the lite build"
+echo "  cargo make release-lite - Build release version of the lite build"
+echo "  cargo make test       - Run tests"
+echo "  cargo make testf      - Run tests with all features"
+echo "  cargo make test-lite  - Run tests for the lite build"
+echo "  cargo make check      - Check compilation"
+echo "  cargo make check-lite - Check compilation of the lite build"
+echo "  cargo make fmt        - Format source code"
+echo "  cargo make fmt-check  - Check formatting"
+echo "  cargo make lint       - Run Clippy"
+echo "  cargo make lint-lite  - Run Clippy on the lite build"
+echo "  cargo make clean      - Remove build artifacts"
+echo "  cargo make validate   - Run formatting and Clippy for both builds"
+echo "  cargo make help       - Show this help"
+'''
+
+[tasks.default]
+alias = "validate"
+
+[tasks.build]
+command = "cargo"
+args = ["build"]
+
+[tasks.release]
+command = "cargo"
+args = ["build", "--release"]
+
+[tasks.test]
+command = "cargo"
+args = ["test"]
+
+[tasks.testf]
+command = "cargo"
+args = ["test", "--all-features"]
+
+[tasks.check]
+command = "cargo"
+args = ["check"]
+
+[tasks.fmt]
+command = "cargo"
+args = ["fmt"]
+
+[tasks.fmt-check]
+command = "cargo"
+args = ["fmt", "--", "--check"]
+
+[tasks.lint]
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.build-lite]
+command = "cargo"
+args = ["build", "--no-default-features"]
+
+[tasks.release-lite]
+command = "cargo"
+args = ["build", "--release", "--no-default-features"]
+
+[tasks.test-lite]
+command = "cargo"
+args = ["test", "--no-default-features"]
+
+[tasks.check-lite]
+command = "cargo"
+args = ["check", "--all-targets", "--no-default-features"]
+
+[tasks.lint-lite]
+command = "cargo"
+args = ["clippy", "--all-targets", "--no-default-features", "--", "-D", "warnings"]
+
+[tasks.clean]
+command = "cargo"
+args = ["clean"]
+
+[tasks.validate]
+dependencies = [
+    "fmt",
+    "lint",
+    "lint-lite",
+]
