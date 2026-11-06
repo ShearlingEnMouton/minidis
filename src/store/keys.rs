@@ -2,11 +2,48 @@ use super::Store;
 
 impl Store {
     pub fn keys(&self, pattern: &[u8]) -> Vec<Vec<u8>> {
-        todo!()
+        let g = self.inner.lock().unwrap();
+        let mut match_keys: Vec<Vec<u8>> = Vec::new();
+
+        for (key, entry) in &g.data {
+            if !entry.is_expired() && glob_match(pattern, key) {
+                match_keys.push(key.clone());
+            }
+        }
+        match_keys
     }
 
     pub fn scan(&self, cursor: u64, pattern: Option<&[u8]>, count: usize) -> (u64, Vec<Vec<u8>>) {
-        todo!()
+        let mut last_hash: u64 = 0;
+        let mut catched_keys: Vec<Vec<u8>> = Vec::new();
+        let mut counted: usize = 0;
+
+        let g = self.inner.lock().unwrap();
+        let mut iter = g.ordered_keys.range((cursor, Vec::new())..).peekable();
+        while let Some((hash, key)) = iter.next() {
+            counted += 1;
+            last_hash = *hash;
+
+            if g.data.get(key).is_some_and(|e| !e.is_expired()) {
+                match pattern {
+                    Some(p) => {
+                        if glob_match(p, key) {
+                            catched_keys.push(key.clone());
+                        }
+                    }
+                    None => catched_keys.push(key.clone()),
+                }
+            }
+
+            if counted >= count && iter.peek().is_none_or(|(next_hash, _)| *next_hash != *hash) {
+                break;
+            }
+        }
+
+        match iter.peek() {
+            Some(_) => (last_hash.checked_add(1).unwrap_or(0), catched_keys),
+            None => (0, catched_keys),
+        }
     }
 }
 
@@ -110,5 +147,87 @@ fn match_class(pattern: &[u8], start: usize, byte: u8) -> (bool, usize) {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob_match;
+
+    fn m(pattern: &str, key: &str) -> bool {
+        glob_match(pattern.as_bytes(), key.as_bytes())
+    }
+
+    #[test]
+    fn literals_and_question_marks() {
+        assert!(m("", ""));
+        assert!(!m("", "a"));
+        assert!(m("abc", "abc"));
+        assert!(!m("abc", "abd"));
+        assert!(!m("abc", "ab"));
+        assert!(!m("ab", "abc"));
+        assert!(!m("A", "a"));
+        assert!(m("h?llo", "hello"));
+        assert!(!m("h?llo", "hllo"));
+    }
+
+    #[test]
+    fn stars_match_any_run_of_bytes() {
+        assert!(m("*", ""));
+        assert!(m("*", "anything"));
+        assert!(m("a*b", "axxb"));
+        assert!(m("a*b", "ab"));
+        assert!(!m("a*b", "ac"));
+        assert!(m("ab*", "ab"));
+        assert!(m("a**b", "ab"));
+        assert!(m("*a", "ba"));
+        assert!(!m("*a", "ab"));
+        assert!(m("*x*y", "axbxcy"));
+        assert!(m("*a*a*b", "aaaab"));
+    }
+
+    #[test]
+    fn many_stars_do_not_backtrack_exponentially() {
+        let key = "a".repeat(5000);
+        assert!(!m("*a*a*a*a*a*a*a*a*a*a*b", &key));
+        assert!(m("*a*a*a*a*a*a*a*a*a*a", &key));
+    }
+
+    #[test]
+    fn classes() {
+        assert!(m("[abc]", "b"));
+        assert!(!m("[abc]", "d"));
+        assert!(m("[a-c]", "b"));
+        assert!(!m("[a-c]", "d"));
+        assert!(m("[z-a]", "m"));
+        assert!(!m("[^0-9]", "5"));
+        assert!(m("[^0-9]", "x"));
+        assert!(m("[a^]", "^"));
+        assert!(m("[\\]]", "]"));
+        assert!(m("[a-]", "-"));
+        assert!(!m("[a-]", "b"));
+        assert!(!m("[]", "a"));
+        assert!(m("[^]", "a"));
+        assert!(m("[a-c][0-9]", "b7"));
+        assert!(m("user:[0-9]*", "user:42"));
+    }
+
+    #[test]
+    fn an_unclosed_class_ends_at_the_end_of_the_pattern() {
+        assert!(m("a[bc", "ab"));
+        assert!(m("a[b-e", "ad"));
+        assert!(!m("a[bc", "a[bc"));
+    }
+
+    #[test]
+    fn backslash_escapes_the_next_byte() {
+        assert!(m("a\\*b", "a*b"));
+        assert!(!m("a\\*b", "axb"));
+        assert!(m("\\?", "?"));
+        assert!(!m("\\?", "x"));
+        assert!(m("a\\\\b", "a\\b"));
+        assert!(m("a\\", "a\\"));
+        assert!(!m("a\\", "a"));
+        assert!(!m("a\\", "ab"));
     }
 }

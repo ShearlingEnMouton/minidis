@@ -62,6 +62,7 @@ impl Inner {
                 break;
             };
             self.data.remove(&key);
+            self.ordered_keys.remove(&(Store::hasher_helper(&key), key));
             removed += 1;
         }
         removed

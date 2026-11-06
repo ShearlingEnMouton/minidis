@@ -976,6 +976,60 @@ mod tests {
 
     #[cfg(feature = "full")]
     #[test]
+    fn keys_and_scan_parse_their_arguments() {
+        assert!(matches!(
+            parse(&["KEYS", "a*"]),
+            Ok(Command::Keys { pattern }) if pattern == b"a*"
+        ));
+        assert!(matches!(
+            parse(&["KEYS"]),
+            Err(CommandError::WrongArity("keys"))
+        ));
+        assert!(matches!(
+            parse(&["KEYS", "a", "b"]),
+            Err(CommandError::WrongArity("keys"))
+        ));
+        assert!(matches!(
+            parse(&["SCAN", "0"]),
+            Ok(Command::Scan {
+                cursor: 0,
+                pattern: None,
+                count: 10
+            })
+        ));
+        assert!(matches!(
+            parse(&["scan", "42", "count", "5", "match", "u:*"]),
+            Ok(Command::Scan { cursor: 42, pattern: Some(p), count: 5 }) if p == b"u:*"
+        ));
+        assert!(matches!(
+            parse(&["SCAN"]),
+            Err(CommandError::WrongArity("scan"))
+        ));
+        for cursor in ["-1", "abc", "18446744073709551616"] {
+            assert!(
+                matches!(parse(&["SCAN", cursor]), Err(CommandError::InvalidCursor)),
+                "{cursor}"
+            );
+        }
+        for parts in [
+            &["SCAN", "0", "COUNT", "0"][..],
+            &["SCAN", "0", "COUNT"][..],
+            &["SCAN", "0", "MATCH"][..],
+            &["SCAN", "0", "TYPE", "string"][..],
+        ] {
+            assert!(
+                matches!(parse(parts), Err(CommandError::SyntaxError)),
+                "{parts:?}"
+            );
+        }
+        assert!(matches!(
+            parse(&["SCAN", "0", "COUNT", "x"]),
+            Err(CommandError::NotAnInteger)
+        ));
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
     fn is_write_matches_the_commands_that_change_data() {
         for parts in [
             &["SET", "k", "v"][..],
@@ -1004,6 +1058,8 @@ mod tests {
             &["REWRITEAOF"][..],
             &["EXISTS", "k"][..],
             &["MGET", "k"][..],
+            &["KEYS", "*"][..],
+            &["SCAN", "0"][..],
         ] {
             assert!(!parse(parts).unwrap().is_write(), "{parts:?}");
         }
@@ -1054,6 +1110,8 @@ mod tests {
             &["APPEND", "k", "v"][..],
             &["INCR", "k"][..],
             &["DECR", "k"][..],
+            &["KEYS", "*"][..],
+            &["SCAN", "0"][..],
         ] {
             assert!(
                 matches!(parse(parts), Err(CommandError::UnknownCommand { .. })),
@@ -1414,6 +1472,25 @@ mod execute_tests {
         assert_eq!(
             run_with(&store, &["MGET", "b", "missing"], &Protocol::Resp3),
             "*2\r\n$1\r\n2\r\n_\r\n"
+        );
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn keys_and_scan_replies() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["KEYS", "*"]), "*0\r\n");
+        assert_eq!(run(&store, &["SCAN", "0"]), "*2\r\n$1\r\n0\r\n*0\r\n");
+        run(&store, &["SET", "a", "1"]);
+        assert_eq!(run(&store, &["KEYS", "a"]), "*1\r\n$1\r\na\r\n");
+        assert_eq!(
+            run(&store, &["SCAN", "0", "COUNT", "100"]),
+            "*2\r\n$1\r\n0\r\n*1\r\n$1\r\na\r\n"
+        );
+        assert_eq!(run(&store, &["SCAN", "x"]), "-ERR invalid cursor\r\n");
+        assert_eq!(
+            run(&store, &["SCAN", "0", "COUNT", "0"]),
+            "-ERR syntax error\r\n"
         );
     }
 
