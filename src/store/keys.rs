@@ -230,4 +230,11 @@ mod tests {
         assert!(!m("a\\", "a"));
         assert!(!m("a\\", "ab"));
     }
+
+    #[test]
+    fn a_trailing_backslash_inside_a_class_is_literal() {
+        assert!(m("[a\\", "\\"));
+        assert!(m("[a\\", "a"));
+        assert!(!m("[a\\", "b"));
+    }
 }
