@@ -498,6 +498,8 @@ fn lite_rejects_full_only_commands() {
         &["APPEND", "k", "v"][..],
         &["INCR", "k"][..],
         &["DECR", "k"][..],
+        &["KEYS", "*"][..],
+        &["SCAN", "0"][..],
     ] {
         let reply = send(&mut c, parts);
         assert!(
@@ -900,4 +902,57 @@ fn string_commands_survive_a_restart_and_keep_ttls() {
         send(&mut c, &["EXISTS", "a", "b", "t", "missing"]),
         ":3\r\n"
     );
+}
+
+#[cfg(feature = "full")]
+fn bulk_strings(reply: &str) -> Vec<String> {
+    let mut lines = reply.split("\r\n");
+    let mut out = Vec::new();
+    while let Some(line) = lines.next() {
+        if line.starts_with('$') && line != "$-1" {
+            out.push(lines.next().unwrap().to_owned());
+        }
+    }
+    out
+}
+
+#[cfg(feature = "full")]
+#[test]
+fn keys_and_scan_list_keys_after_a_restart() {
+    let dir = TempDir::new();
+    let mut server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    for i in 0..30 {
+        let key = format!("user:{i}");
+        assert_eq!(send(&mut c, &["SET", key.as_str(), "v"]), "+OK\r\n");
+    }
+    assert_eq!(send(&mut c, &["RPUSH", "queue", "x"]), ":1\r\n");
+    assert_eq!(send(&mut c, &["DEL", "user:0"]), ":1\r\n");
+    drop(c);
+    server.stop();
+
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    let mut users: Vec<String> = (1..30).map(|i| format!("user:{i}")).collect();
+    users.sort();
+    let mut keys = bulk_strings(&send(&mut c, &["KEYS", "user:*"]));
+    keys.sort();
+    assert_eq!(keys, users);
+
+    let mut cursor = "0".to_owned();
+    let mut scanned = Vec::new();
+    loop {
+        let reply = send(&mut c, &["SCAN", cursor.as_str(), "COUNT", "4"]);
+        let mut parts = bulk_strings(&reply);
+        cursor = parts.remove(0);
+        scanned.extend(parts);
+        if cursor == "0" {
+            break;
+        }
+    }
+    scanned.sort();
+    let mut all = users.clone();
+    all.push("queue".to_owned());
+    all.sort();
+    assert_eq!(scanned, all);
 }

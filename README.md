@@ -18,7 +18,7 @@ What it does:
 | --- | --- |
 | Connection | `PING [message]`, `HELLO [protover]`, `CLIENT SETINFO attribute value` |
 | Strings | `GET`, `SET key value [EX seconds \| PX milliseconds \| EXAT unix-seconds \| PXAT unix-milliseconds]`, `SETNX`, `MSET key value [key value ...]`, `MGET key [key ...]`, `APPEND`, `INCR`, `DECR` |
-| Keys | `DEL key [key ...]`, `EXISTS key [key ...]`, `TYPE`, `DBSIZE` |
+| Keys | `DEL key [key ...]`, `EXISTS key [key ...]`, `TYPE`, `DBSIZE`, `KEYS pattern`, `SCAN cursor [MATCH pattern] [COUNT count]` |
 | Expiry | `TTL`, `PTTL`, `EXPIRE`, `PEXPIRE`, `PEXPIREAT`, `PERSIST` |
 | Lists | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE` |
 | Hashes | `HSET`, `HGET`, `HDEL`, `HLEN`, `HEXISTS`, `HGETALL` |
@@ -34,6 +34,13 @@ The string commands follow Redis behavior:
 - `MGET` returns a null for keys that are missing or do not hold a string, instead of an error.
 - `EXISTS` counts a key once per occurrence in the arguments, so `EXISTS a a` returns `2` when `a` exists.
 
+`KEYS` and `SCAN` match keys against glob-style patterns. `*` matches any sequence of bytes, `?` matches one byte, `[abc]`, `[a-z]` and `[^abc]` match one byte from a set, and `\` makes the next byte literal. Matching is case-sensitive, and a `[` without a closing `]` extends to the end of the pattern.
+
+- `KEYS` returns every matching key in a single reply. It reads all keys while holding the store lock, so it is meant for debugging and small data sets.
+- `SCAN` reads the keys in steps. The first call uses cursor `0`, and each call returns the cursor for the next one. The iteration is complete when the returned cursor is `0`. Every key that exists for the whole iteration is returned at least once. Keys added or removed during the iteration may or may not be returned.
+- `COUNT` (default `10`) is the number of keys examined per call, not the number returned. `MATCH` filters the examined keys, so a call can return no keys together with a non-zero cursor. Keys with the same hash are always returned by the same call, so a call can examine slightly more than `COUNT` keys.
+- A cursor is a position in an ordering of the keys by hash. It is only valid until the server restarts. The ordering is kept in a second index next to the data, which stores each key name a second time.
+
 `HELLO`, `INFO`, `COMMAND` and `CLIENT SETINFO` exist so that clients can complete their connection handshake, and their replies are fixed or empty:
 
 - `INFO` has two sections, `server` and `persistence`. `persistence` always reports `loading:0`, because the server accepts connections only after the AOF has been replayed. An unknown section returns an empty reply.
@@ -44,7 +51,7 @@ The string commands follow Redis behavior:
 Not supported:
 
 - String commands not listed above, such as `INCRBY`, `DECRBY`, `STRLEN`, `GETRANGE` and `GETSET`
-- Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `HELLO ... AUTH/SETNAME`, and the count argument of `LPOP`/`RPOP`
+- Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `HELLO ... AUTH/SETNAME`, `SCAN ... TYPE`, and the count argument of `LPOP`/`RPOP`
 - Authentication, replication, pub/sub, transactions, and multiple databases
 
 ## Client compatibility

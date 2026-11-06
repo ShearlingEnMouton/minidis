@@ -5,6 +5,7 @@ use std::{
 #[cfg(feature = "full")]
 use std::{
     collections::{BTreeSet, VecDeque},
+    hash::{DefaultHasher, Hash, Hasher},
     time::{Duration, Instant},
 };
 
@@ -12,6 +13,8 @@ use std::{
 mod expiry;
 #[cfg(feature = "full")]
 mod hash;
+#[cfg(feature = "full")]
+mod keys;
 #[cfg(feature = "full")]
 mod list;
 #[cfg(feature = "full")]
@@ -37,6 +40,8 @@ struct Inner {
     data: HashMap<Vec<u8>, Entry>,
     #[cfg(feature = "full")]
     expirations: BTreeSet<(Instant, Vec<u8>)>,
+    #[cfg(feature = "full")]
+    ordered_keys: BTreeSet<(u64, Vec<u8>)>,
 }
 
 enum EntryType {
@@ -83,12 +88,21 @@ pub struct SnapshotEntry {
 }
 
 impl Store {
+    #[cfg(feature = "full")]
+    fn hasher_helper(key: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub fn new() -> Store {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 data: HashMap::new(),
                 #[cfg(feature = "full")]
                 expirations: BTreeSet::new(),
+                #[cfg(feature = "full")]
+                ordered_keys: BTreeSet::new(),
             })),
         }
     }
@@ -181,6 +195,9 @@ impl Inner {
     fn remove(&mut self, key: &[u8]) -> Option<Entry> {
         let entry = self.data.remove(key)?;
         #[cfg(feature = "full")]
+        self.ordered_keys
+            .remove(&(Store::hasher_helper(key), key.to_vec()));
+        #[cfg(feature = "full")]
         if let Some(t) = entry.expires_at {
             self.expirations.remove(&(t, key.to_vec()));
         }
@@ -194,6 +211,9 @@ impl Inner {
         #[cfg(feature = "full")] expires_at: Option<Instant>,
     ) {
         self.remove(&key);
+        #[cfg(feature = "full")]
+        self.ordered_keys
+            .insert((Store::hasher_helper(&key), key.clone()));
         #[cfg(feature = "full")]
         if let Some(t) = expires_at {
             self.expirations.insert((t, key.clone()));
@@ -243,6 +263,24 @@ mod tests {
                 EntryType::Hash(h) => assert!(!h.is_empty(), "empty hash kept"),
                 EntryType::Value(_) => {}
             }
+        }
+        assert_eq!(g.ordered_keys.len(), g.data.len());
+        for (h, key) in &g.ordered_keys {
+            assert!(g.data.contains_key(key), "ordered key missing from data");
+            assert_eq!(*h, Store::hasher_helper(key));
+        }
+    }
+
+    fn scan_all(store: &Store, pattern: Option<&[u8]>, count: usize) -> Vec<Vec<u8>> {
+        let mut cursor = 0;
+        let mut all = Vec::new();
+        loop {
+            let (next, keys) = store.scan(cursor, pattern, count);
+            all.extend(keys);
+            if next == 0 {
+                return all;
+            }
+            cursor = next;
         }
     }
 
@@ -580,6 +618,144 @@ mod tests {
             store.incr_by(k("l"), 1),
             Err(StoreError::WrongType)
         ));
+    }
+
+    #[test]
+    fn keys_skips_expired_keys_and_filters_by_pattern() {
+        let store = Store::new();
+        store.set(k("user:1"), k("a"), None);
+        store.set(k("user:2"), k("b"), None);
+        store.rpush(k("user:list"), vec![k("x")]).unwrap();
+        store.set(k("other"), k("c"), None);
+        store.set(k("user:old"), k("d"), Some(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(5));
+        let mut keys = store.keys(b"user:*");
+        keys.sort();
+        assert_eq!(keys, vec![k("user:1"), k("user:2"), k("user:list")]);
+        assert_eq!(store.keys(b"*").len(), 4);
+        assert!(store.keys(b"nope*").is_empty());
+    }
+
+    #[test]
+    fn scan_with_a_small_count_returns_every_key_once() {
+        let store = Store::new();
+        let mut expected: Vec<Vec<u8>> = (0..100).map(|i| k(&format!("key:{i}"))).collect();
+        for key in &expected {
+            store.set(key.clone(), k("v"), None);
+        }
+        let mut found = scan_all(&store, None, 3);
+        found.sort();
+        expected.sort();
+        assert_eq!(found, expected);
+
+        let (next, all) = store.scan(0, None, 1000);
+        assert_eq!(next, 0);
+        assert_eq!(all.len(), 100);
+        check_invariants(&store);
+    }
+
+    #[test]
+    fn scan_on_an_empty_store_ends_immediately() {
+        let store = Store::new();
+        assert_eq!(store.scan(0, None, 10), (0, vec![]));
+    }
+
+    #[test]
+    fn scan_filters_by_pattern_and_skips_expired_keys() {
+        let store = Store::new();
+        for i in 0..30 {
+            store.set(k(&format!("a:{i}")), k("v"), None);
+            store.set(k(&format!("b:{i}")), k("v"), None);
+        }
+        store.set(k("a:old"), k("v"), Some(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(5));
+        let mut found = scan_all(&store, Some(b"a:*"), 4);
+        found.sort();
+        let mut expected: Vec<Vec<u8>> = (0..30).map(|i| k(&format!("a:{i}"))).collect();
+        expected.sort();
+        assert_eq!(found, expected);
+        assert_eq!(scan_all(&store, None, 4).len(), 60);
+    }
+
+    #[test]
+    fn scan_returns_every_key_that_exists_for_the_whole_iteration() {
+        let store = Store::new();
+        for i in 0..200 {
+            store.set(k(&format!("stable:{i}")), k("v"), None);
+        }
+        for i in 0..50 {
+            store.set(k(&format!("gone:{i}")), k("v"), None);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut cursor = 0;
+        let mut round = 0;
+        loop {
+            let (next, keys) = store.scan(cursor, None, 7);
+            seen.extend(keys);
+            if round < 50 {
+                store.del(&[k(&format!("gone:{round}"))]);
+                store.set(k(&format!("new:{round}")), k("v"), None);
+            }
+            round += 1;
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        for i in 0..200 {
+            assert!(seen.contains(&k(&format!("stable:{i}"))), "stable:{i}");
+        }
+        check_invariants(&store);
+    }
+
+    #[test]
+    fn scan_returns_keys_with_the_same_hash_in_one_reply() {
+        let store = Store::new();
+        {
+            let mut g = store.inner.lock().unwrap();
+            for (h, key) in [(5, k("a")), (5, k("b")), (7, k("c"))] {
+                g.data.insert(
+                    key.clone(),
+                    Entry {
+                        value: EntryType::Value(k("v")),
+                        expires_at: None,
+                    },
+                );
+                g.ordered_keys.insert((h, key));
+            }
+        }
+        let (next, keys) = store.scan(0, None, 1);
+        assert_eq!(keys, vec![k("a"), k("b")]);
+        assert_eq!(next, 6);
+        let (next, keys) = store.scan(next, None, 1);
+        assert_eq!(keys, vec![k("c")]);
+        assert_eq!(next, 0);
+    }
+
+    #[test]
+    fn purge_removes_keys_from_the_scan_order() {
+        let store = Store::new();
+        store.set(k("a"), k("v"), Some(Duration::from_millis(1)));
+        store.set(k("b"), k("v"), None);
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(store.purge_expired(10), 1);
+        check_invariants(&store);
+        assert_eq!(scan_all(&store, None, 10), vec![k("b")]);
+    }
+
+    #[test]
+    fn overwrites_and_deletes_keep_the_scan_order_in_sync() {
+        let store = Store::new();
+        store.set(k("a"), k("1"), None);
+        store.set(k("a"), k("2"), None);
+        store.rpush(k("l"), vec![k("x")]).unwrap();
+        store.lpop(&k("l")).unwrap();
+        store.hset(k("h"), vec![(k("f"), k("v"))]).unwrap();
+        store.hdel(&k("h"), &[k("f")]).unwrap();
+        store.mset(vec![(k("m"), k("1")), (k("a"), k("3"))]);
+        store.del(&[k("m")]);
+        check_invariants(&store);
+        assert_eq!(scan_all(&store, None, 10), vec![k("a")]);
     }
 }
 

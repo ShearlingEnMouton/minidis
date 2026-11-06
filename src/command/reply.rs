@@ -87,6 +87,8 @@ impl From<CommandError> for Reply {
             CommandError::Overflow => {
                 Reply::Error("ERR increment or decrement would overflow".to_owned())
             }
+            #[cfg(feature = "full")]
+            CommandError::InvalidCursor => Reply::Error("ERR invalid cursor".to_owned()),
         }
     }
 }

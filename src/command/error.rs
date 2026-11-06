@@ -16,6 +16,8 @@ pub enum CommandError {
     NoProto,
     #[cfg(feature = "full")]
     Overflow,
+    #[cfg(feature = "full")]
+    InvalidCursor,
 }
 impl From<StoreError> for CommandError {
     fn from(e: StoreError) -> Self {
