@@ -54,10 +54,12 @@ pub enum Command {
     #[cfg(feature = "full")]
     Incr {
         key: Vec<u8>,
+        delta: i64,
     },
     #[cfg(feature = "full")]
     Decr {
         key: Vec<u8>,
+        delta: i64,
     },
     #[cfg(feature = "full")]
     Keys {

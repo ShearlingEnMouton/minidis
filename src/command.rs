@@ -240,6 +240,7 @@ impl Command {
             b"INCR" => match args.len() {
                 2 => Ok(Command::Incr {
                     key: args[1].clone(),
+                    delta: 1,
                 }),
                 _ => Err(CommandError::WrongArity("incr")),
             },
@@ -247,8 +248,25 @@ impl Command {
             b"DECR" => match args.len() {
                 2 => Ok(Command::Decr {
                     key: args[1].clone(),
+                    delta: 1,
                 }),
                 _ => Err(CommandError::WrongArity("decr")),
+            },
+            #[cfg(feature = "full")]
+            b"INCRBY" => match args.len() {
+                3 => Ok(Command::Incr {
+                    key: args[1].clone(),
+                    delta: Self::parse_int(&args[2])?,
+                }),
+                _ => Err(CommandError::WrongArity("incrby")),
+            },
+            #[cfg(feature = "full")]
+            b"DECRBY" => match args.len() {
+                3 => Ok(Command::Decr {
+                    key: args[1].clone(),
+                    delta: Self::parse_int(&args[2])?,
+                }),
+                _ => Err(CommandError::WrongArity("decrby")),
             },
             #[cfg(feature = "full")]
             b"KEYS" => match args.len() {
@@ -489,14 +507,17 @@ impl Command {
                 Err(e) => CommandError::from(e).into(),
             },
             #[cfg(feature = "full")]
-            Command::Incr { key } => match store.incr_by(key, 1) {
+            Command::Incr { key, delta } => match store.incr_by(key, delta) {
                 Ok(n) => Reply::Integer(n),
                 Err(e) => CommandError::from(e).into(),
             },
             #[cfg(feature = "full")]
-            Command::Decr { key } => match store.incr_by(key, -1) {
-                Ok(n) => Reply::Integer(n),
-                Err(e) => CommandError::from(e).into(),
+            Command::Decr { key, delta } => match delta.checked_neg() {
+                Some(delta) => match store.incr_by(key, delta) {
+                    Ok(n) => Reply::Integer(n),
+                    Err(e) => CommandError::from(e).into(),
+                },
+                None => CommandError::Overflow.into(),
             },
             #[cfg(feature = "full")]
             Command::Keys { pattern } => {
@@ -966,6 +987,9 @@ mod tests {
             (&["INCR"][..], "incr"),
             (&["INCR", "k", "1"][..], "incr"),
             (&["DECR"][..], "decr"),
+            (&["INCRBY", "k"][..], "incrby"),
+            (&["INCRBY", "k", "1", "2"][..], "incrby"),
+            (&["DECRBY", "k"][..], "decrby"),
         ] {
             assert!(
                 matches!(parse(parts), Err(CommandError::WrongArity(n)) if n == name),
@@ -1046,6 +1070,8 @@ mod tests {
             &["APPEND", "k", "v"][..],
             &["INCR", "k"][..],
             &["DECR", "k"][..],
+            &["INCRBY", "k", "5"][..],
+            &["DECRBY", "k", "5"][..],
         ] {
             assert!(parse(parts).unwrap().is_write(), "{parts:?}");
         }
@@ -1110,6 +1136,8 @@ mod tests {
             &["APPEND", "k", "v"][..],
             &["INCR", "k"][..],
             &["DECR", "k"][..],
+            &["INCRBY", "k", "1"][..],
+            &["DECRBY", "k", "1"][..],
             &["KEYS", "*"][..],
             &["SCAN", "0"][..],
         ] {
@@ -1496,6 +1524,19 @@ mod execute_tests {
 
     #[cfg(feature = "full")]
     #[test]
+    fn incrby_and_decrby_change_the_value_by_the_given_amount() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["INCRBY", "n", "5"]), ":5\r\n");
+        assert_eq!(run(&store, &["INCRBY", "n", "-2"]), ":3\r\n");
+        assert_eq!(run(&store, &["DECRBY", "n", "10"]), ":-7\r\n");
+        assert_eq!(run(&store, &["DECRBY", "n", "-7"]), ":0\r\n");
+        assert_eq!(run(&store, &["INCR", "n"]), ":1\r\n");
+        assert_eq!(run(&store, &["DECR", "n"]), ":0\r\n");
+        assert_eq!(run(&store, &["DECRBY", "m", "3"]), ":-3\r\n");
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
     fn string_command_errors_match_redis_wording() {
         let store = Store::new();
         run(&store, &["SET", "s", "abc"]);
@@ -1511,6 +1552,20 @@ mod execute_tests {
         );
         assert_eq!(run(&store, &["INCR", "l"]), WRONGTYPE);
         assert_eq!(run(&store, &["APPEND", "l", "y"]), WRONGTYPE);
+        assert_eq!(
+            run(&store, &["INCRBY", "n", "x"]),
+            "-ERR value is not an integer or out of range\r\n"
+        );
+        assert_eq!(
+            run(&store, &["INCRBY", "max", "1"]),
+            "-ERR increment or decrement would overflow\r\n"
+        );
+        assert_eq!(
+            run(&store, &["DECRBY", "n", "-9223372036854775808"]),
+            "-ERR increment or decrement would overflow\r\n"
+        );
+        assert_eq!(run(&store, &["GET", "n"]), "$-1\r\n");
+        assert_eq!(run(&store, &["DECRBY", "l", "1"]), WRONGTYPE);
         assert_eq!(
             run(&store, &["MSET", "a"]),
             "-ERR wrong number of arguments for 'mset' command\r\n"

@@ -17,7 +17,7 @@ What it does:
 | Group | Commands |
 | --- | --- |
 | Connection | `PING [message]`, `HELLO [protover]`, `CLIENT SETINFO attribute value` |
-| Strings | `GET`, `SET key value [EX seconds \| PX milliseconds \| EXAT unix-seconds \| PXAT unix-milliseconds]`, `SETNX`, `MSET key value [key value ...]`, `MGET key [key ...]`, `APPEND`, `INCR`, `DECR` |
+| Strings | `GET`, `SET key value [EX seconds \| PX milliseconds \| EXAT unix-seconds \| PXAT unix-milliseconds]`, `SETNX`, `MSET key value [key value ...]`, `MGET key [key ...]`, `APPEND`, `INCR`, `DECR`, `INCRBY key increment`, `DECRBY key decrement` |
 | Keys | `DEL key [key ...]`, `EXISTS key [key ...]`, `TYPE`, `DBSIZE`, `KEYS pattern`, `SCAN cursor [MATCH pattern] [COUNT count]` |
 | Expiry | `TTL`, `PTTL`, `EXPIRE`, `PEXPIRE`, `PEXPIREAT`, `PERSIST` |
 | Lists | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE` |
@@ -29,8 +29,8 @@ Using a command on a key of the wrong type returns `WRONGTYPE`, like Redis does.
 The string commands follow Redis behavior:
 
 - `MSET` and `SETNX` store values without a TTL. `MSET` replaces existing keys of any type in one step, so other clients never see a partial update.
-- `APPEND`, `INCR` and `DECR` keep the TTL of an existing key. A missing key is created without a TTL, and `INCR` and `DECR` start from `0`.
-- `INCR` and `DECR` accept values that fit in a 64-bit signed integer. Other values return `ERR value is not an integer or out of range`, and a result outside that range returns `ERR increment or decrement would overflow`. The value is left unchanged in both cases.
+- `APPEND`, `INCR`, `DECR`, `INCRBY` and `DECRBY` keep the TTL of an existing key. A missing key is created without a TTL, and the counter commands start from `0`.
+- `INCR`, `DECR`, `INCRBY` and `DECRBY` accept values and amounts that fit in a 64-bit signed integer. Other values return `ERR value is not an integer or out of range`, and a result outside that range returns `ERR increment or decrement would overflow`. The value is left unchanged in both cases.
 - `MGET` returns a null for keys that are missing or do not hold a string, instead of an error.
 - `EXISTS` counts a key once per occurrence in the arguments, so `EXISTS a a` returns `2` when `a` exists.
 
@@ -50,7 +50,7 @@ The string commands follow Redis behavior:
 
 Not supported:
 
-- String commands not listed above, such as `INCRBY`, `DECRBY`, `STRLEN`, `GETRANGE` and `GETSET`
+- String commands not listed above, such as `INCRBYFLOAT`, `STRLEN`, `GETRANGE` and `GETSET`
 - Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `HELLO ... AUTH/SETNAME`, `SCAN ... TYPE`, and the count argument of `LPOP`/`RPOP`
 - Authentication, replication, pub/sub, transactions, and multiple databases
 
