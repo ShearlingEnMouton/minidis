@@ -498,6 +498,8 @@ fn lite_rejects_full_only_commands() {
         &["APPEND", "k", "v"][..],
         &["INCR", "k"][..],
         &["DECR", "k"][..],
+        &["INCRBY", "k", "1"][..],
+        &["DECRBY", "k", "1"][..],
         &["KEYS", "*"][..],
         &["SCAN", "0"][..],
     ] {
@@ -883,6 +885,8 @@ fn string_commands_survive_a_restart_and_keep_ttls() {
     assert_eq!(send(&mut c, &["INCR", "n"]), ":1\r\n");
     assert_eq!(send(&mut c, &["INCR", "n"]), ":2\r\n");
     assert_eq!(send(&mut c, &["DECR", "n"]), ":1\r\n");
+    assert_eq!(send(&mut c, &["INCRBY", "n", "10"]), ":11\r\n");
+    assert_eq!(send(&mut c, &["DECRBY", "n", "10"]), ":1\r\n");
     assert_eq!(send(&mut c, &["SET", "t", "5", "EX", "100"]), "+OK\r\n");
     assert_eq!(send(&mut c, &["INCR", "t"]), ":6\r\n");
     assert_eq!(send(&mut c, &["APPEND", "t", "0"]), ":2\r\n");
