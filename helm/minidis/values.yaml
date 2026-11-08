@@ -37,6 +37,13 @@ connectionLimit:
   maxClients: 1000
   idleTimeout: 3600
 
+# Leave password and existingSecret empty to disable authentication.
+auth:
+  # Password stored in a Secret created by the chart (REQUIREPASS).
+  password: ""
+  existingSecret: ""
+  existingSecretPasswordKey: password
+
 aof:
   path: /data/appendonly.aof
   # enum: always | everysec | no
