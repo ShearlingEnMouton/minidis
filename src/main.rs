@@ -444,3 +444,44 @@ async fn handle_client(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_auth_with_a_password_configured() {
+        let pass = Some(&b"s3cret"[..]);
+        assert!(check_auth(pass, None, b"s3cret").is_ok());
+        assert!(check_auth(pass, Some(b"default"), b"s3cret").is_ok());
+        for (username, password) in [
+            (None, &b"wrong"[..]),
+            (None, b"s3cre"),
+            (None, b"s3cret!"),
+            (None, b""),
+            (Some(&b"default"[..]), b"wrong"),
+            (Some(b"other"), b"s3cret"),
+        ] {
+            assert!(
+                matches!(
+                    check_auth(pass, username, password),
+                    Err(CommandError::WrongPass)
+                ),
+                "{username:?} {password:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn check_auth_without_a_password_configured() {
+        assert!(matches!(
+            check_auth(None, None, b"anything"),
+            Err(CommandError::AuthNotConfigured)
+        ));
+        assert!(check_auth(None, Some(b"default"), b"anything").is_ok());
+        assert!(matches!(
+            check_auth(None, Some(b"other"), b"anything"),
+            Err(CommandError::WrongPass)
+        ));
+    }
+}

@@ -885,8 +885,81 @@ mod tests {
             );
         }
         assert!(matches!(
-            parse(&["HELLO", "3", "extra"]),
-            Err(CommandError::WrongArity("hello"))
+            parse(&["HELLO", "three"]),
+            Err(CommandError::InvalidProtocolVersion)
+        ));
+    }
+
+    fn hello_auth(parts: &[&str]) -> Option<(Vec<u8>, Vec<u8>)> {
+        match parse(parts).unwrap() {
+            Command::Hello { auth, .. } => auth,
+            other => panic!("expected HELLO, got {other:?}"),
+        }
+    }
+
+    fn hello_syntax_option(parts: &[&str]) -> String {
+        match parse(parts) {
+            Err(CommandError::HelloSyntax(option)) => option,
+            other => panic!("expected a HELLO syntax error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hello_reads_auth_and_setname_options() {
+        assert_eq!(hello_auth(&["HELLO", "3"]), None);
+        assert_eq!(
+            hello_auth(&["HELLO", "3", "auth", "default", "pw"]),
+            Some((b"default".to_vec(), b"pw".to_vec()))
+        );
+        assert_eq!(
+            hello_auth(&["HELLO", "2", "SETNAME", "app", "AUTH", "u", "pw"]),
+            Some((b"u".to_vec(), b"pw".to_vec()))
+        );
+        assert_eq!(hello_auth(&["HELLO", "3", "setname", "app"]), None);
+        assert_eq!(
+            hello_auth(&["HELLO", "3", "AUTH", "a", "1", "AUTH", "b", "2"]),
+            Some((b"b".to_vec(), b"2".to_vec()))
+        );
+    }
+
+    #[test]
+    fn hello_rejects_unknown_or_incomplete_options() {
+        assert_eq!(hello_syntax_option(&["HELLO", "3", "extra"]), "extra");
+        assert_eq!(
+            hello_syntax_option(&["HELLO", "3", "AUTH", "default"]),
+            "AUTH"
+        );
+        assert_eq!(hello_syntax_option(&["HELLO", "3", "auth"]), "auth");
+        assert_eq!(hello_syntax_option(&["HELLO", "3", "SETNAME"]), "SETNAME");
+        assert_eq!(
+            hello_syntax_option(&["HELLO", "3", "SETNAME", "app", "extra"]),
+            "extra"
+        );
+    }
+
+    #[test]
+    fn auth_takes_a_password_and_an_optional_username() {
+        match parse(&["AUTH", "pw"]).unwrap() {
+            Command::Auth { username, password } => {
+                assert_eq!(username, None);
+                assert_eq!(password, b"pw");
+            }
+            other => panic!("expected AUTH, got {other:?}"),
+        }
+        match parse(&["auth", "default", "pw"]).unwrap() {
+            Command::Auth { username, password } => {
+                assert_eq!(username.as_deref(), Some(&b"default"[..]));
+                assert_eq!(password, b"pw");
+            }
+            other => panic!("expected AUTH, got {other:?}"),
+        }
+        assert!(matches!(
+            parse(&["AUTH"]),
+            Err(CommandError::WrongArity("auth"))
+        ));
+        assert!(matches!(
+            parse(&["AUTH", "a", "b", "c"]),
+            Err(CommandError::SyntaxError)
         ));
     }
 

@@ -86,6 +86,37 @@ jobs:
             fi
           done
 
+      - name: auth values reach the container as REQUIREPASS
+        run: |
+          render() { helm template minidis helm/minidis "$@"; }
+          secrets() { yq ea '[select(.kind == "Secret")] | length' -; }
+          ref() { yq 'select(.kind == "StatefulSet") | .spec.template.spec.containers[0].env[] | select(.name == "REQUIREPASS") | .valueFrom.secretKeyRef.name + "/" + .valueFrom.secretKeyRef.key' -; }
+          expect() { [ "$2" = "$3" ] || { echo "$1: expected '$3', got '$2'"; exit 1; }; }
+
+          out=$(render)
+          expect "no auth: Secrets" "$(secrets <<< "$out")" 0
+          expect "no auth: env" "$(yq 'select(.kind == "StatefulSet") | .spec.template.spec.containers[0].env' - <<< "$out")" null
+
+          out=$(render --set auth.password=s3cret)
+          expect "password: Secrets" "$(secrets <<< "$out")" 1
+          expect "password: Secret value" "$(yq 'select(.kind == "Secret") | .data.password | @base64d' - <<< "$out")" s3cret
+          expect "password: secretKeyRef" "$(ref <<< "$out")" minidis-secret/password
+
+          out=$(render --set auth.existingSecret=ext --set auth.password=ignored)
+          expect "existingSecret: Secrets" "$(secrets <<< "$out")" 0
+          expect "existingSecret: secretKeyRef" "$(ref <<< "$out")" ext/password
+
+          out=$(render --set auth.existingSecret=ext --set auth.existingSecretPasswordKey=pw)
+          expect "existingSecretPasswordKey: secretKeyRef" "$(ref <<< "$out")" ext/pw
+
+      - name: Numeric auth.password needs --set-string
+        run: |
+          if helm template minidis helm/minidis --set auth.password=1234 > /dev/null 2>&1; then
+            echo "auth.password=1234 was accepted as a number"
+            exit 1
+          fi
+          helm template minidis helm/minidis --set-string auth.password=1234 > /dev/null
+
   coverage:
     runs-on: ubuntu-latest
     permissions:
