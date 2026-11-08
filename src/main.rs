@@ -462,13 +462,10 @@ mod tests {
             (Some(&b"default"[..]), b"wrong"),
             (Some(b"other"), b"s3cret"),
         ] {
-            assert!(
-                matches!(
-                    check_auth(pass, username, password),
-                    Err(CommandError::WrongPass)
-                ),
-                "{username:?} {password:?}"
-            );
+            assert!(matches!(
+                check_auth(pass, username, password),
+                Err(CommandError::WrongPass)
+            ));
         }
     }
 
