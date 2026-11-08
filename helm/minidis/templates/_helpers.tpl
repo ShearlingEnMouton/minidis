@@ -24,3 +24,15 @@ app: "{{ template "minidisservice.name" . }}"
   {{- $suffix := ternary "-lite" "" (eq .Values.variant "lite") -}}
 {{- .Values.image.tag | default (printf "%s%s" .Chart.AppVersion $suffix) -}}
 {{- end -}}
+
+{{- define "minidisservice.secretName" -}}
+{{- .Values.auth.existingSecret | default (printf "%s-secret" (include "minidisservice.name" .)) -}}
+{{- end -}}
+
+{{- define "minidisservice.secretPasswordKey" -}}
+  {{- if .Values.auth.existingSecret -}}
+{{- .Values.auth.existingSecretPasswordKey | default "password" -}}
+  {{- else -}}
+password
+  {{- end -}}
+{{- end -}}

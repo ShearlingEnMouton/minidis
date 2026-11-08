@@ -10,10 +10,15 @@ pub enum CommandError {
     NotAnInteger,
     #[cfg(feature = "full")]
     InvalidExpire(&'static str),
-    #[cfg(feature = "full")]
     SyntaxError,
     WrongType,
     NoProto,
+    InvalidProtocolVersion,
+    HelloSyntax(String),
+    NoAuth,
+    HelloNoAuth,
+    WrongPass,
+    AuthNotConfigured,
     #[cfg(feature = "full")]
     Overflow,
     #[cfg(feature = "full")]

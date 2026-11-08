@@ -5,7 +5,7 @@ mod types;
 use crate::store::Store;
 #[cfg(feature = "full")]
 use crate::store::TtlStatus;
-use error::CommandError;
+pub use error::CommandError;
 pub use reply::{Protocol, Reply};
 #[cfg(feature = "full")]
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -116,19 +116,58 @@ impl Command {
                 _ => Err(CommandError::WrongArity("ping")),
             },
             b"HELLO" => match args.len() {
-                1 => Ok(Command::Hello { protover: None }),
-                2 => {
-                    let protocol = match Self::parse_int(&args[1])? {
-                        2 => Protocol::Resp2,
-                        3 => Protocol::Resp3,
-                        _ => return Err(CommandError::NoProto),
+                1 => Ok(Command::Hello {
+                    protover: None,
+                    auth: None,
+                }),
+                _ => {
+                    let protocol = match Self::parse_int(&args[1]) {
+                        Ok(p) => match p {
+                            2 => Protocol::Resp2,
+                            3 => Protocol::Resp3,
+                            _ => return Err(CommandError::NoProto),
+                        },
+                        Err(_) => return Err(CommandError::InvalidProtocolVersion),
                     };
+
+                    let mut auth: Option<(Vec<u8>, Vec<u8>)> = None;
+                    let mut index = 2;
+
+                    while index < args.len() {
+                        let rest = args.len() - index - 1;
+                        match &args[index] {
+                            arg if arg.eq_ignore_ascii_case(b"AUTH") && rest >= 2 => {
+                                auth = Some((args[index + 1].clone(), args[index + 2].clone()));
+                                index += 3;
+                            }
+                            arg if arg.eq_ignore_ascii_case(b"SETNAME") && rest >= 1 => {
+                                index += 2;
+                            }
+                            _ => {
+                                return Err(CommandError::HelloSyntax(
+                                    String::from_utf8_lossy(&args[index]).into_owned(),
+                                ));
+                            }
+                        }
+                    }
 
                     Ok(Command::Hello {
                         protover: Some(protocol),
+                        auth,
                     })
                 }
-                _ => Err(CommandError::WrongArity("hello")),
+            },
+            b"AUTH" => match args.len() {
+                2 => Ok(Command::Auth {
+                    username: None,
+                    password: args[1].clone(),
+                }),
+                3 => Ok(Command::Auth {
+                    username: Some(args[1].clone()),
+                    password: args[2].clone(),
+                }),
+                1 => Err(CommandError::WrongArity("auth")),
+                _ => Err(CommandError::SyntaxError),
             },
             b"INFO" => match args.len() {
                 1 => Ok(Command::Info { section: None }),
@@ -454,6 +493,9 @@ impl Command {
             Command::Ping {
                 message: Some(message),
             } => Reply::Bulk(message),
+            Command::Auth { .. } => {
+                Reply::Error("ERR AUTH is handled by the connection".to_owned())
+            }
             Command::Hello { .. } => {
                 Reply::Error("NOPROTO unsupported protocol version".to_owned())
             }
@@ -820,18 +862,20 @@ mod tests {
     fn hello_takes_an_optional_protocol_version() {
         assert!(matches!(
             parse(&["HELLO"]),
-            Ok(Command::Hello { protover: None })
+            Ok(Command::Hello { protover: None, .. })
         ));
         assert!(matches!(
             parse(&["HELLO", "2"]),
             Ok(Command::Hello {
-                protover: Some(Protocol::Resp2)
+                protover: Some(Protocol::Resp2),
+                ..
             })
         ));
         assert!(matches!(
             parse(&["hello", "3"]),
             Ok(Command::Hello {
-                protover: Some(Protocol::Resp3)
+                protover: Some(Protocol::Resp3),
+                ..
             })
         ));
         for version in ["0", "1", "4", "-3"] {
@@ -841,8 +885,70 @@ mod tests {
             );
         }
         assert!(matches!(
-            parse(&["HELLO", "3", "extra"]),
-            Err(CommandError::WrongArity("hello"))
+            parse(&["HELLO", "three"]),
+            Err(CommandError::InvalidProtocolVersion)
+        ));
+    }
+
+    fn hello_auth_is(parts: &[&str], expected: Option<(&str, &str)>) -> bool {
+        let expected = expected.map(|(u, p)| (u.as_bytes().to_vec(), p.as_bytes().to_vec()));
+        matches!(parse(parts), Ok(Command::Hello { auth, .. }) if auth == expected)
+    }
+
+    fn is_hello_syntax_error(parts: &[&str], option: &str) -> bool {
+        matches!(parse(parts), Err(CommandError::HelloSyntax(o)) if o == option)
+    }
+
+    #[test]
+    fn hello_reads_auth_and_setname_options() {
+        assert!(hello_auth_is(&["HELLO", "3"], None));
+        assert!(hello_auth_is(
+            &["HELLO", "3", "auth", "default", "pw"],
+            Some(("default", "pw"))
+        ));
+        assert!(hello_auth_is(
+            &["HELLO", "2", "SETNAME", "app", "AUTH", "u", "pw"],
+            Some(("u", "pw"))
+        ));
+        assert!(hello_auth_is(&["HELLO", "3", "setname", "app"], None));
+        assert!(hello_auth_is(
+            &["HELLO", "3", "AUTH", "a", "1", "AUTH", "b", "2"],
+            Some(("b", "2"))
+        ));
+    }
+
+    #[test]
+    fn hello_rejects_unknown_or_incomplete_options() {
+        assert!(is_hello_syntax_error(&["HELLO", "3", "extra"], "extra"));
+        assert!(is_hello_syntax_error(
+            &["HELLO", "3", "AUTH", "default"],
+            "AUTH"
+        ));
+        assert!(is_hello_syntax_error(&["HELLO", "3", "auth"], "auth"));
+        assert!(is_hello_syntax_error(&["HELLO", "3", "SETNAME"], "SETNAME"));
+        assert!(is_hello_syntax_error(
+            &["HELLO", "3", "SETNAME", "app", "extra"],
+            "extra"
+        ));
+    }
+
+    #[test]
+    fn auth_takes_a_password_and_an_optional_username() {
+        assert!(matches!(
+            parse(&["AUTH", "pw"]),
+            Ok(Command::Auth { username: None, password }) if password == b"pw"
+        ));
+        assert!(matches!(
+            parse(&["auth", "default", "pw"]),
+            Ok(Command::Auth { username: Some(u), password }) if u == b"default" && password == b"pw"
+        ));
+        assert!(matches!(
+            parse(&["AUTH"]),
+            Err(CommandError::WrongArity("auth"))
+        ));
+        assert!(matches!(
+            parse(&["AUTH", "a", "b", "c"]),
+            Err(CommandError::SyntaxError)
         ));
     }
 
@@ -1387,6 +1493,11 @@ mod execute_tests {
         assert_eq!(
             run(&store, &["NOPE", "a"]),
             "-ERR unknown command 'NOPE', with args beginning with: 'a' \r\n"
+        );
+
+        assert_eq!(
+            run(&store, &["HELLO", "three"]),
+            "-ERR Protocol version is not an integer or out of range\r\n"
         );
     }
 

@@ -9,6 +9,7 @@ What it does:
 - Stores strings, lists and hashes in memory
 - Expires keys after a TTL (checked on access, plus a background cleanup)
 - Saves writes to an append-only file (AOF) and replays it on startup
+- Optionally requires a password, set with `REQUIREPASS`. See [Authentication](#authentication)
 - Ships as a Docker image and a Helm chart on GitHub Container Registry (GHCR)
 - Comes in two builds: the full build (default) and a minimal lite build. See [Lite build](#lite-build)
 
@@ -16,7 +17,7 @@ What it does:
 
 | Group | Commands |
 | --- | --- |
-| Connection | `PING [message]`, `HELLO [protover]`, `CLIENT SETINFO attribute value` |
+| Connection | `PING [message]`, `AUTH [username] password`, `HELLO [protover [AUTH username password] [SETNAME clientname]]`, `CLIENT SETINFO attribute value` |
 | Strings | `GET`, `SET key value [EX seconds \| PX milliseconds \| EXAT unix-seconds \| PXAT unix-milliseconds]`, `SETNX`, `MSET key value [key value ...]`, `MGET key [key ...]`, `APPEND`, `INCR`, `DECR`, `INCRBY key increment`, `DECRBY key decrement` |
 | Keys | `DEL key [key ...]`, `EXISTS key [key ...]`, `TYPE`, `DBSIZE`, `KEYS pattern`, `SCAN cursor [MATCH pattern] [COUNT count]` |
 | Expiry | `TTL`, `PTTL`, `EXPIRE`, `PEXPIRE`, `PEXPIREAT`, `PERSIST` |
@@ -43,6 +44,8 @@ The string commands follow Redis behavior:
 
 `HELLO`, `INFO`, `COMMAND` and `CLIENT SETINFO` exist so that clients can complete their connection handshake, and their replies are fixed or empty:
 
+- `HELLO ... SETNAME clientname` is accepted, but the name is not stored.
+
 - `INFO` has two sections, `server` and `persistence`. `persistence` always reports `loading:0`, because the server accepts connections only after the AOF has been replayed. An unknown section returns an empty reply.
 - `COMMAND` returns an empty array and `COMMAND DOCS` returns an empty map.
 - `CLIENT SETINFO` returns `OK` for any attribute and does not store the value.
@@ -51,8 +54,9 @@ The string commands follow Redis behavior:
 Not supported:
 
 - String commands not listed above, such as `INCRBYFLOAT`, `STRLEN`, `GETRANGE` and `GETSET`
-- Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `HELLO ... AUTH/SETNAME`, `SCAN ... TYPE`, and the count argument of `LPOP`/`RPOP`
-- Authentication, replication, pub/sub, transactions, and multiple databases
+- Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `SCAN ... TYPE`, and the count argument of `LPOP`/`RPOP`
+- ACL users other than `default`, replication, pub/sub, transactions, and multiple databases
+- TLS. Passwords and data are sent in plain text
 
 ## Client compatibility
 
@@ -88,9 +92,34 @@ redis-py ignores the error returned for `CLIENT MAINT_NOTIFICATIONS`. ioredis se
 
 In interactive mode, `redis-cli` sends `COMMAND DOCS`, `INFO SERVER` and `COMMAND` on connect. A single command, such as `redis-cli ping`, sends only that command.
 
+## Authentication
+
+Authentication is off by default. Setting `REQUIREPASS` to a non-empty value turns it on. An empty value leaves it off, as an empty `requirepass` does in Redis. The startup log reports whether authentication is enabled. The password itself is never logged.
+
+The rules follow Redis with a single `default` user:
+
+- A new connection starts unauthenticated. Until it authenticates, every command other than `AUTH` and `HELLO` returns `-NOAUTH Authentication required.` An unknown command or a wrong number of arguments still returns its own error, because Redis checks those first.
+- `AUTH password` and `AUTH default password` authenticate the connection when the password matches. A wrong password or any other username returns `-WRONGPASS invalid username-password pair or user is disabled.`
+- `HELLO protover AUTH username password` authenticates the connection and switches the protocol in one command. `HELLO` without `AUTH` on an unauthenticated connection returns a `-NOAUTH HELLO must be called with the client already authenticated ...` error. A `HELLO` that fails does not change the protocol.
+- A failed `AUTH` does not log out a connection that is already authenticated.
+- Authentication is per connection. Every new connection, including those of the Kubernetes probes, has to authenticate.
+
+Without `REQUIREPASS`, every connection is authenticated from the start. `AUTH default <any password>` then returns `OK`, `AUTH password` returns `-ERR AUTH <password> called without any password configured for the default user ...`, and any other username returns `-WRONGPASS`, as in Redis.
+
+The password is compared in constant time for passwords of the same length, so the reply time does not reveal how many leading bytes were correct. It can still reveal whether the length matches.
+
+```sh
+REQUIREPASS=s3cret AOF_PATH=./data/appendonly.aof cargo run --release
+redis-cli -p 3131 -a s3cret --no-auth-warning ping
+```
+
+`redis-cli` can also read the password from the `REDISCLI_AUTH` environment variable, which keeps it out of the shell history and the process list. Client libraries take it as a connection option, for example `redis.Redis(port=3131, password="s3cret")` in redis-py. redis-py sends `HELLO 3 AUTH default <password>` with its default settings and `AUTH <password>` with `protocol=2`.
+
+minidis has no TLS, so the password and all data cross the network in plain text. Authentication protects against accidental access on a trusted network. It does not protect traffic on an untrusted one.
+
 ## Lite build
 
-The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`, plus the handshake commands `HELLO`, `INFO`, `COMMAND`, `COMMAND DOCS` and `CLIENT SETINFO`, so clients connect to it in the same way. RESP3 is available in both builds. Every other command is rejected as an unknown command.
+The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`, plus the handshake commands `HELLO`, `INFO`, `COMMAND`, `COMMAND DOCS` and `CLIENT SETINFO`, so clients connect to it in the same way. RESP3 and authentication (`AUTH`, `REQUIREPASS`) are available in both builds. Every other command is rejected as an unknown command.
 
 The list, hash and expiry code is removed at compile time, not filtered at runtime. It is behind the Cargo feature `full`, which is on by default. The lite build turns the feature off:
 
@@ -135,6 +164,7 @@ All settings are environment variables.
 | `SHUTDOWN_TIMEOUT` | `10` | Seconds to wait for open client connections when shutting down. Must be greater than 0. See [Shutdown](#shutdown) |
 | `MAX_CLIENTS` | `1000` | Most client connections open at the same time. Must be greater than 0. See [Connection limits](#connection-limits) |
 | `IDLE_TIMEOUT` | `3600` | Seconds without data from a client after which its connection is closed. `0` disables the timeout. See [Connection limits](#connection-limits) |
+| `REQUIREPASS` | empty | Password clients must send with `AUTH` or `HELLO ... AUTH`. Empty disables authentication. See [Authentication](#authentication) |
 
 The server exits at startup if `AOF_FSYNC`, `SHUTDOWN_TIMEOUT`, `MAX_CLIENTS` or `IDLE_TIMEOUT` has an invalid value, and in the full build also if `PURGE_LIMIT` or `PURGE_INTERVAL` has one.
 
@@ -218,6 +248,9 @@ Main values:
 | `shutdown.timeout` | `10` | Sets `SHUTDOWN_TIMEOUT` |
 | `connectionLimit.maxClients` | `1000` | Sets `MAX_CLIENTS`. Must be an integer greater than 0 |
 | `connectionLimit.idleTimeout` | `3600` | Sets `IDLE_TIMEOUT`. Must be an integer, 0 or greater |
+| `auth.password` | empty | Password for `REQUIREPASS`. The chart stores it in a Secret named `<name>-secret`. Must be a string, so a password made only of digits needs `--set-string` or quotes in a values file. Empty disables authentication unless `auth.existingSecret` is set |
+| `auth.existingSecret` | empty | Name of an existing Secret in the release namespace that holds the password. When set, the chart creates no Secret and ignores `auth.password` |
+| `auth.existingSecretPasswordKey` | `password` | Key in `auth.existingSecret` that holds the password |
 | `terminationGracePeriodSeconds` | `30` | Time Kubernetes waits before killing the pod. It is counted from the start of the `preStop` hook (`lifecycle.preStop.sleep.seconds`, 15 by default), so it must be larger than that sleep plus `shutdown.timeout` |
 | `startupProbe.periodSeconds` | `5` | Seconds between startup checks |
 | `startupProbe.failureThreshold` | `30` | Failed startup checks before the container is restarted. With `periodSeconds`, this gives the server 150 seconds by default to replay the AOF |
@@ -231,11 +264,22 @@ The chart runs minidis as a StatefulSet with one replica. Besides the client Ser
 
 minidis is a single-node server and must not be scaled beyond one replica. Each additional replica would get its own volume and AOF, and the Service would spread clients across independent datasets.
 
+**Authentication.** The password reaches the container as `REQUIREPASS` through a `secretKeyRef`, never through the ConfigMap. With `auth.password`, the value is still kept in the Helm release, so `auth.existingSecret` is the better choice when the password is managed elsewhere:
+
+```sh
+kubectl create secret generic minidis-auth --namespace minidis --from-literal=password='s3cret'
+helm install minidis oci://ghcr.io/shearlingenmouton/minidis-helm \\
+  --version <version> --namespace minidis --create-namespace \\
+  --set auth.existingSecret=minidis-auth
+```
+
+Kubernetes reads the Secret only when the container starts. After the password changes, restart the pod, for example with `kubectl rollout restart statefulset/<name>-sts`.
+
 The claim template cannot be changed on an existing StatefulSet, so changing `pvc.storage` after installation makes `helm upgrade` fail. To resize the volume, edit the PersistentVolumeClaim directly. This works only if its StorageClass allows volume expansion.
 
 **Upgrading from 0.4.x or earlier.** Earlier charts ran a Deployment with a claim named `minidis-pvc`. An upgrade replaces the Deployment with the StatefulSet, which starts with a new, empty claim. The old claim is not deleted because it has the `helm.sh/resource-policy: keep` annotation, but the chart no longer uses it. To keep the data, scale the StatefulSet to zero, copy `appendonly.aof` from the old claim to the new one, then scale it back to one.
 
-**Probes.** The startup and liveness probes run `minidis healthcheck` inside the container. In that mode the binary does not start a server. It connects to the address given by `BIND_ADDR` and `EXPOSE_PORT` (`127.0.0.1` when the server binds to `0.0.0.0`, `::1` for `::`), sends `PING`, and exits with status 0 if the reply is `PONG`. Otherwise it prints the error to stderr and exits with status 1. Kubernetes runs the liveness probe only after the startup probe has succeeded, so a long AOF replay is not mistaken for a stuck server. After that, the liveness probe restarts the container when the server stops answering. The readiness probe checks the TCP port, which opens only after the replay.
+**Probes.** The startup and liveness probes run `minidis healthcheck` inside the container. In that mode the binary does not start a server. It connects to the address given by `BIND_ADDR` and `EXPOSE_PORT` (`127.0.0.1` when the server binds to `0.0.0.0`, `::1` for `::`), sends `AUTH` with `REQUIREPASS` first when it is set, then sends `PING`, and exits with status 0 if the reply is `PONG`. Otherwise it prints the error to stderr and exits with status 1. Kubernetes runs the liveness probe only after the startup probe has succeeded, so a long AOF replay is not mistaken for a stuck server. After that, the liveness probe restarts the container when the server stops answering. The readiness probe checks the TCP port, which opens only after the replay.
 
 Because the claim is kept, changing `variant` from `full` to `lite` on an existing release reuses the old AOF. If that file holds commands the lite build does not support, the pod fails to start until the AOF is emptied or a new volume is used. See [Lite build](#lite-build).
 
@@ -282,7 +326,7 @@ The repository ships a `pre-push` Git hook that runs `cargo fmt --check` and rej
 git config core.hooksPath .githooks
 ```
 
-The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. The `chart` job runs `helm lint --strict` on the chart and checks that the `aof.fsync` value, given with `--set` or in a values file, reaches the container as `AOF_FSYNC`, checks the same for the `connectionLimit` values, and checks that invalid values are rejected. A separate job measures coverage for both builds, shows the summary on the workflow run page, uploads the `lcov.info` report as an artifact, and sends it to [Codecov](https://codecov.io/gh/ShearlingEnMouton/minidis) using GitHub OIDC, so no upload token is stored in the repository. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
+The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. The `chart` job runs `helm lint --strict` on the chart and checks that the `aof.fsync` value, given with `--set` or in a values file, reaches the container as `AOF_FSYNC`, checks the same for the `connectionLimit` values, checks that invalid values are rejected, and renders the `auth` values to check that the Secret is created only when needed, that `REQUIREPASS` refers to the right Secret and key, and that a numeric `auth.password` is rejected unless it is given with `--set-string`. A separate job measures coverage for both builds, shows the summary on the workflow run page, uploads the `lcov.info` report as an artifact, and sends it to [Codecov](https://codecov.io/gh/ShearlingEnMouton/minidis) using GitHub OIDC, so no upload token is stored in the repository. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
 
 | Path | Contents |
 | --- | --- |

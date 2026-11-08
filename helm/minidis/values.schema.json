@@ -30,6 +30,23 @@
           "minimum": 0
         }
       }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "password": {
+          "description": "Password required from clients (REQUIREPASS), stored in a Secret created by the chart. Empty disables authentication unless existingSecret is set.",
+          "type": "string"
+        },
+        "existingSecret": {
+          "description": "Name of an existing Secret that holds the password. Takes precedence over password; no Secret is created by the chart when set.",
+          "type": "string"
+        },
+        "existingSecretPasswordKey": {
+          "description": "Key in existingSecret that holds the password. Defaults to password.",
+          "type": "string"
+        }
+      }
     }
   }
 }

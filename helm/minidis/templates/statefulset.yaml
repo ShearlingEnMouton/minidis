@@ -45,6 +45,14 @@ spec:
         envFrom:
         - configMapRef:
             name: {{ include "minidisservice.name" . }}-cm
+{{- if or .Values.auth.password .Values.auth.existingSecret }}
+        env:
+          - name: REQUIREPASS
+            valueFrom:
+              secretKeyRef:
+                name: {{ include "minidisservice.secretName" . }}
+                key: {{ include "minidisservice.secretPasswordKey" . }}
+{{- end }}
         startupProbe:
           {{- toYaml .Values.healthCheckCmd | nindent 10 }}
           periodSeconds: {{ .Values.startupProbe.periodSeconds }}

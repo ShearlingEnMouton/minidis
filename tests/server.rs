@@ -13,6 +13,9 @@ static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 static PORT: AtomicU16 = AtomicU16::new(20000);
 
 const SET_A: &[u8] = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n";
+const PASSWORD: &str = "s3cret";
+const NOAUTH: &str = "-NOAUTH Authentication required.\r\n";
+const WRONGPASS: &str = "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
 
 struct TempDir {
     path: PathBuf,
@@ -49,6 +52,12 @@ impl Server {
 
     fn start_with(aof: &PathBuf, fsync: &str) -> Server {
         let mut server = Server::spawn(aof, fsync);
+        server.wait_until_ready();
+        server
+    }
+
+    fn start_with_password(aof: &PathBuf, password: &str) -> Server {
+        let mut server = Server::spawn_with_env(aof, "always", &[("REQUIREPASS", password)]);
         server.wait_until_ready();
         server
     }
@@ -675,11 +684,17 @@ fn an_invalid_log_level_falls_back_to_info() {
 }
 
 fn healthcheck(port: u16, aof: &PathBuf) -> std::process::Output {
+    healthcheck_with_env(port, aof, &[])
+}
+
+fn healthcheck_with_env(port: u16, aof: &PathBuf, extra: &[(&str, &str)]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_minidis"))
         .arg("healthcheck")
         .env("BIND_ADDR", "127.0.0.1")
         .env("EXPOSE_PORT", port.to_string())
         .env("AOF_PATH", aof)
+        .env_remove("REQUIREPASS")
+        .envs(extra.iter().copied())
         .output()
         .unwrap()
 }
@@ -728,6 +743,125 @@ fn healthcheck_fails_on_an_unexpected_reply() {
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected PING reply"));
+}
+
+#[test]
+fn healthcheck_authenticates_when_requirepass_is_set() {
+    let dir = TempDir::new();
+    let server = Server::start_with_password(&dir.aof(), PASSWORD);
+
+    let output = healthcheck_with_env(server.port, &dir.aof(), &[("REQUIREPASS", PASSWORD)]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = healthcheck_with_env(server.port, &dir.aof(), &[("REQUIREPASS", "wrong")]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected AUTH reply"));
+
+    let output = healthcheck(server.port, &dir.aof());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected PING reply"));
+}
+
+#[test]
+fn requirepass_rejects_commands_until_auth_succeeds() {
+    let dir = TempDir::new();
+    let server = Server::start_with_password(&dir.aof(), PASSWORD);
+    let mut c = server.connect();
+
+    assert_eq!(send(&mut c, &["GET", "k"]), NOAUTH);
+    assert_eq!(send(&mut c, &["PING"]), NOAUTH);
+    #[cfg(feature = "full")]
+    assert_eq!(send(&mut c, &["INCRBY", "k", "x"]), NOAUTH);
+    assert!(send(&mut c, &["NOPE"]).starts_with("-ERR unknown command 'NOPE'"));
+    assert_eq!(
+        send(&mut c, &["GET"]),
+        "-ERR wrong number of arguments for 'get' command\r\n"
+    );
+
+    assert_eq!(send(&mut c, &["AUTH", "wrong"]), WRONGPASS);
+    assert_eq!(send(&mut c, &["GET", "k"]), NOAUTH);
+
+    assert_eq!(send(&mut c, &["AUTH", PASSWORD]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["SET", "k", "v"]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["GET", "k"]), "$1\r\nv\r\n");
+
+    assert_eq!(send(&mut c, &["AUTH", "wrong"]), WRONGPASS);
+    assert_eq!(send(&mut c, &["GET", "k"]), "$1\r\nv\r\n");
+
+    let mut other = server.connect();
+    assert_eq!(send(&mut other, &["GET", "k"]), NOAUTH);
+}
+
+#[test]
+fn auth_accepts_only_the_default_user() {
+    let dir = TempDir::new();
+    let server = Server::start_with_password(&dir.aof(), PASSWORD);
+    let mut c = server.connect();
+
+    assert_eq!(send(&mut c, &["AUTH", "other", PASSWORD]), WRONGPASS);
+    assert_eq!(send(&mut c, &["AUTH", "default", "wrong"]), WRONGPASS);
+    assert_eq!(send(&mut c, &["AUTH", "default", PASSWORD]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["GET", "missing"]), "$-1\r\n");
+}
+
+#[test]
+fn hello_auth_authenticates_and_switches_the_protocol() {
+    let dir = TempDir::new();
+    let server = Server::start_with_password(&dir.aof(), PASSWORD);
+    let mut c = server.connect();
+
+    assert!(
+        send(&mut c, &["HELLO", "3"])
+            .starts_with("-NOAUTH HELLO must be called with the client already authenticated")
+    );
+    assert_eq!(
+        send(&mut c, &["HELLO", "3", "AUTH", "default"]),
+        "-ERR Syntax error in HELLO option 'AUTH'\r\n"
+    );
+    assert_eq!(
+        send(&mut c, &["HELLO", "3", "AUTH", "default", "wrong"]),
+        WRONGPASS
+    );
+    assert_eq!(send(&mut c, &["GET", "missing"]), NOAUTH);
+
+    let reply = send(&mut c, &["HELLO", "3", "AUTH", "default", PASSWORD]);
+    assert!(reply.starts_with("%7\r\n"), "{reply:?}");
+    assert_eq!(send(&mut c, &["GET", "missing"]), "_\r\n");
+}
+
+#[test]
+fn failed_hello_auth_keeps_the_protocol() {
+    let dir = TempDir::new();
+    let server = Server::start_with_password(&dir.aof(), PASSWORD);
+    let mut c = server.connect();
+
+    assert_eq!(
+        send(&mut c, &["HELLO", "3", "AUTH", "default", "wrong"]),
+        WRONGPASS
+    );
+    assert_eq!(send(&mut c, &["AUTH", PASSWORD]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["GET", "missing"]), "$-1\r\n");
+}
+
+#[test]
+fn auth_without_requirepass_follows_redis() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    assert_eq!(
+        send(&mut c, &["AUTH", "pw"]),
+        "-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n"
+    );
+    assert_eq!(send(&mut c, &["AUTH", "default", "anything"]), "+OK\r\n");
+    assert_eq!(send(&mut c, &["AUTH", "other", "anything"]), WRONGPASS);
+    let reply = send(&mut c, &["HELLO", "3", "AUTH", "default", "anything"]);
+    assert!(reply.starts_with("%7\r\n"), "{reply:?}");
+    assert_eq!(send(&mut c, &["GET", "missing"]), "_\r\n");
 }
 
 fn hello_id(reply: &str) -> u64 {
