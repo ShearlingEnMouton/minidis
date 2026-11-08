@@ -1,5 +1,6 @@
 use std::{
     net::SocketAddr,
+    sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -18,7 +19,7 @@ use tokio::{
 };
 
 use crate::aof::{Aof, FsyncPolicy};
-use crate::command::{Command, Protocol, Reply};
+use crate::command::{Command, CommandError, Protocol, Reply};
 use crate::store::Store;
 mod aof;
 mod command;
@@ -52,6 +53,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let max_clients = env_positive_u64("MAX_CLIENTS", 1000)?;
     let idle_timeout = env_duration("IDLE_TIMEOUT", 3600)?;
+    let requirepass: Option<Arc<[u8]>> = std::env::var("REQUIREPASS")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(|p| Arc::from(p.into_bytes()));
+    log_info!(
+        "Authentication: {}",
+        if requirepass.is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
 
     let sigint = signal(SignalKind::interrupt())?;
     let sigterm = signal(SignalKind::terminate())?;
@@ -122,8 +135,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let aof = aof.clone();
                 let client_token = cancellation_token.clone();
                 let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
+                let requirepass = requirepass.clone();
                 tracker.spawn(async move {
-                    if let Err(e) = handle_client(socket, peer_addr, &store, &aof, &client_token, idle_timeout, client_id).await {
+                    let ctx = ClientContext {
+                        store: &store,
+                        aof: &aof,
+                        cancellation_token: &client_token,
+                        idle_timeout,
+                        client_id,
+                        requirepass: requirepass.as_deref(),
+                    };
+                    if let Err(e) = handle_client(socket, peer_addr, ctx).await {
                         log_err!("Error handling client {}: {:?}", peer_addr, e);
                     }
                 });
@@ -196,17 +218,81 @@ fn parse_fsync_policy(value: &str) -> Result<FsyncPolicy, String> {
     }
 }
 
+fn check_auth(
+    requirepass: Option<&[u8]>,
+    username: Option<&[u8]>,
+    password: &[u8],
+) -> Result<(), CommandError> {
+    match requirepass {
+        Some(p) => {
+            if matches!(username, None | Some(b"default")) {
+                if password.len() != p.len() {
+                    return Err(CommandError::WrongPass);
+                }
+
+                if password
+                    .iter()
+                    .zip(p.iter())
+                    .fold(0, |xor, (p_byte, rp_byte)| xor | p_byte ^ rp_byte)
+                    == 0
+                {
+                    Ok(())
+                } else {
+                    Err(CommandError::WrongPass)
+                }
+            } else {
+                Err(CommandError::WrongPass)
+            }
+        }
+        None => match username {
+            Some(u) => match u {
+                b"default" => Ok(()),
+                _ => Err(CommandError::WrongPass),
+            },
+            None => Err(CommandError::AuthNotConfigured),
+        },
+    }
+}
+
 fn dispatch(
     args: &[Vec<u8>],
     store: &Store,
     aof: &Aof,
     protocol: &mut Protocol,
     client_id: u64,
+    authenticated: &mut bool,
+    requirepass: Option<&[u8]>,
 ) -> Reply {
-    let cmd = match Command::from_args(args) {
+    let parsed = Command::from_args(args);
+
+    if !*authenticated {
+        let exempt = args
+            .first()
+            .is_some_and(|n| n.eq_ignore_ascii_case(b"AUTH") || n.eq_ignore_ascii_case(b"HELLO"))
+            || matches!(
+                parsed,
+                Err(CommandError::UnknownCommand { .. } | CommandError::WrongArity(_))
+            );
+        if !exempt {
+            return Reply::from(CommandError::NoAuth);
+        }
+    }
+
+    let cmd = match parsed {
         Ok(cmd) => cmd,
         Err(e) => return Reply::from(e),
     };
+
+    if let Command::Auth { username, password } = &cmd {
+        match check_auth(requirepass, username.as_deref(), password) {
+            Ok(_) => {
+                *authenticated = true;
+                return Reply::Simple("OK");
+            }
+            Err(e) => return Reply::from(e),
+        }
+    }
+
     #[cfg(feature = "full")]
     if matches!(cmd, Command::Rewriteaof) {
         return match aof.rewrite(store) {
@@ -220,7 +306,17 @@ fn dispatch(
             }
         };
     }
-    if let Command::Hello { protover } = cmd {
+    if let Command::Hello { protover, auth } = cmd {
+        if let Some((username, password)) = auth {
+            match check_auth(requirepass, Some(&username), &password) {
+                Ok(_) => *authenticated = true,
+                Err(e) => return Reply::from(e),
+            }
+        }
+        if !*authenticated {
+            return Reply::from(CommandError::HelloNoAuth);
+        }
+
         if let Some(p) = protover {
             *protocol = p;
         }
@@ -261,17 +357,31 @@ fn dispatch(
     }
 }
 
+struct ClientContext<'a> {
+    store: &'a Store,
+    aof: &'a Aof,
+    cancellation_token: &'a CancellationToken,
+    idle_timeout: Option<Duration>,
+    client_id: u64,
+    requirepass: Option<&'a [u8]>,
+}
+
 async fn handle_client(
     mut stream: TcpStream,
     peer_addr: SocketAddr,
-    store: &Store,
-    aof: &Aof,
-    cancellation_token: &CancellationToken,
-    idle_timeout: Option<Duration>,
-    client_id: u64,
+    ctx: ClientContext<'_>,
 ) -> tokio::io::Result<()> {
+    let ClientContext {
+        store,
+        aof,
+        cancellation_token,
+        idle_timeout,
+        client_id,
+        requirepass,
+    } = ctx;
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut protocol = Protocol::Resp2;
+    let mut authenticated = requirepass.is_none();
     let mut seen_data = false;
     loop {
         let bytes_read = tokio::select! {
@@ -305,8 +415,16 @@ async fn handle_client(
                         continue;
                     }
                     let mut out = Vec::new();
-                    dispatch(&args, store, aof, &mut protocol, client_id)
-                        .encode(&mut out, &protocol);
+                    dispatch(
+                        &args,
+                        store,
+                        aof,
+                        &mut protocol,
+                        client_id,
+                        &mut authenticated,
+                        requirepass,
+                    )
+                    .encode(&mut out, &protocol);
                     stream.write_all(&out).await?;
                 }
                 Ok(None) => break,

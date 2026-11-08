@@ -78,11 +78,26 @@ impl From<CommandError> for Reply {
             CommandError::InvalidExpire(cmd) => {
                 Reply::Error(format!("ERR invalid expire time in '{cmd}' command"))
             }
-            #[cfg(feature = "full")]
             CommandError::SyntaxError => Reply::Error("ERR syntax error".to_owned()),
             CommandError::NoProto => {
                 Reply::Error("NOPROTO unsupported protocol version".to_owned())
             }
+            CommandError::InvalidProtocolVersion => {
+                Reply::Error("ERR Protocol version is not an integer or out of range".to_owned())
+            }
+            CommandError::HelloSyntax(option) => {
+                Reply::Error(format!("ERR Syntax error in HELLO option '{option}'"))
+            }
+            CommandError::NoAuth => Reply::Error("NOAUTH Authentication required.".to_owned()),
+            CommandError::HelloNoAuth => Reply::Error(
+                "NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time".to_owned(),
+            ),
+            CommandError::WrongPass => Reply::Error(
+                "WRONGPASS invalid username-password pair or user is disabled.".to_owned(),
+            ),
+            CommandError::AuthNotConfigured => Reply::Error(
+                "ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?".to_owned(),
+            ),
             #[cfg(feature = "full")]
             CommandError::Overflow => {
                 Reply::Error("ERR increment or decrement would overflow".to_owned())

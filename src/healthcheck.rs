@@ -20,6 +20,8 @@ pub fn healthz() -> std::io::Result<()> {
         .parse()
         .map_err(|_| std::io::Error::other(format!("invalid EXPOSE_PORT: {port}")))?;
 
+    let requirepass = std::env::var("REQUIREPASS").ok().filter(|p| !p.is_empty());
+
     let addr = (host, port)
         .to_socket_addrs()?
         .next()
@@ -28,10 +30,20 @@ pub fn healthz() -> std::io::Result<()> {
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
 
+    if let Some(pass) = requirepass {
+        let pass_len = pass.len();
+        stream.write_all(format!("*2\r\n$4\r\nAUTH\r\n${pass_len}\r\n{pass}\r\n").as_bytes())?;
+        let mut pass_buf = [0u8; 5];
+        stream.read_exact(&mut pass_buf)?;
+        if &pass_buf != b"+OK\r\n" {
+            return Err(std::io::Error::other("unexpected AUTH reply"));
+        }
+    }
+
     stream.write_all(b"*1\r\n$4\r\nPING\r\n")?;
-    let mut buf = [0u8; 7];
-    stream.read_exact(&mut buf)?;
-    if &buf == b"+PONG\r\n" {
+    let mut ping_buf = [0u8; 7];
+    stream.read_exact(&mut ping_buf)?;
+    if &ping_buf == b"+PONG\r\n" {
         Ok(())
     } else {
         Err(std::io::Error::other("unexpected PING reply"))

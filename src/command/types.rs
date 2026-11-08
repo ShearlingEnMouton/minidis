@@ -10,6 +10,11 @@ pub enum Command {
     },
     Hello {
         protover: Option<Protocol>,
+        auth: Option<(Vec<u8>, Vec<u8>)>,
+    },
+    Auth {
+        username: Option<Vec<u8>>,
+        password: Vec<u8>,
     },
     Info {
         section: Option<Vec<u8>>,
