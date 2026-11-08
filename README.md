@@ -328,6 +328,8 @@ git config core.hooksPath .githooks
 
 The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` for both the full and the lite build, on every push to `main` and on pull requests. The `chart` job runs `helm lint --strict` on the chart and checks that the `aof.fsync` value, given with `--set` or in a values file, reaches the container as `AOF_FSYNC`, checks the same for the `connectionLimit` values, checks that invalid values are rejected, and renders the `auth` values to check that the Secret is created only when needed, that `REQUIREPASS` refers to the right Secret and key, and that a numeric `auth.password` is rejected unless it is given with `--set-string`. A separate job measures coverage for both builds, shows the summary on the workflow run page, uploads the `lcov.info` report as an artifact, and sends it to [Codecov](https://codecov.io/gh/ShearlingEnMouton/minidis) using GitHub OIDC, so no upload token is stored in the repository. Dependabot checks the Cargo dependencies and the GitHub Actions versions weekly.
 
+The CodeQL workflow scans the Rust code and the workflows on every push to `main`, on pull requests and once a week. Test code is left out: `#[cfg(test)]` modules are skipped by reading the crate with `cfg(test)` off, and the `tests/` directory is excluded in `.github/codeql/codeql-config.yml`. Tests use fixed passwords, which would otherwise be reported as hard-coded credentials.
+
 | Path | Contents |
 | --- | --- |
 | `src/main.rs` | Startup, environment settings, client connections |
@@ -339,7 +341,8 @@ The CI workflow runs `cargo fmt --check`, then `cargo clippy` and `cargo test` f
 | `src/limits.rs` | Protocol size limits |
 | `helm/minidis/` | Helm chart |
 | `.githooks/` | Git hooks |
-| `.github/workflows/` | CI and release workflows |
+| `.github/workflows/` | CI, CodeQL and release workflows |
+| `.github/codeql/` | CodeQL configuration |
 | `.github/dependabot.yml` | Dependabot configuration |
 | `.github/ISSUE_TEMPLATE/`, `.github/pull_request_template.md` | Issue form and pull request template |
 

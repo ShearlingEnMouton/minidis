@@ -1,0 +1,5 @@
+name: minidis CodeQL config
+
+# Integration tests use fixed passwords and are not shipped.
+paths-ignore:
+  - tests
