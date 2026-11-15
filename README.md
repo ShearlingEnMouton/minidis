@@ -105,6 +105,15 @@ redis-py ignores the error returned for `CLIENT MAINT_NOTIFICATIONS`. ioredis se
 
 In interactive mode, `redis-cli` sends `COMMAND DOCS`, `INFO SERVER` and `COMMAND` on connect. A single command, such as `redis-cli ping`, sends only that command.
 
+`valkey-cli` 9.1.3 works the same way for single commands, `-3` (RESP3), `-r` (repeat), `--scan` and commands read from standard input. It authenticates with `-a`, `--user`/`--pass`, `VALKEYCLI_AUTH` or `REDISCLI_AUTH`. Some of its built-in tools need commands that minidis does not have:
+
+| Mode | Result |
+| --- | --- |
+| `--latency` | Works |
+| `--pipe` | Does not complete. After the data it sends an empty line and an `ECHO` marker, then waits for the marker to come back, and minidis has no `ECHO` |
+| `--bigkeys`, `--memkeys` | Fail, because they send `READONLY` first |
+| `--stat` | Runs, but shows invalid numbers, because `CONFIG GET` and most `INFO` fields are missing |
+
 ## Authentication
 
 Authentication is off by default. Setting `REQUIREPASS` to a non-empty value turns it on. An empty value leaves it off, as an empty `requirepass` does in Redis. The startup log reports whether authentication is enabled. The password itself is never logged.
@@ -288,11 +297,17 @@ helm install minidis oci://ghcr.io/shearlingenmouton/minidis-helm \
 
 Kubernetes reads the Secret only when the container starts. After the password changes, restart the pod, for example with `kubectl rollout restart statefulset/<name>-sts`.
 
+`helm upgrade` without any `--set` or `-f` reuses the values of the previous release, so it does not turn authentication off. Pass `--reset-values` (or `--set auth.password=` with an empty value) to go back to the chart defaults.
+
 The claim template cannot be changed on an existing StatefulSet, so changing `pvc.storage` after installation makes `helm upgrade` fail. To resize the volume, edit the PersistentVolumeClaim directly. This works only if its StorageClass allows volume expansion.
 
 **Upgrading from 0.4.x or earlier.** Earlier charts ran a Deployment with a claim named `minidis-pvc`. An upgrade replaces the Deployment with the StatefulSet, which starts with a new, empty claim. The old claim is not deleted because it has the `helm.sh/resource-policy: keep` annotation, but the chart no longer uses it. To keep the data, scale the StatefulSet to zero, copy `appendonly.aof` from the old claim to the new one, then scale it back to one.
 
 **Probes.** The startup and liveness probes run `minidis healthcheck` inside the container. In that mode the binary does not start a server. It connects to the address given by `BIND_ADDR` and `EXPOSE_PORT` (`127.0.0.1` when the server binds to `0.0.0.0`, `::1` for `::`), sends `AUTH` with `REQUIREPASS` first when it is set, then sends `PING`, and exits with status 0 if the reply is `PONG`. Otherwise it prints the error to stderr and exits with status 1. Kubernetes runs the liveness probe only after the startup probe has succeeded, so a long AOF replay is not mistaken for a stuck server. After that, the liveness probe restarts the container when the server stops answering. The readiness probe checks the TCP port, which opens only after the replay.
+
+**Tested clusters.** The chart has been installed with its default values on k3s v1.36 and on GKE Autopilot (Kubernetes 1.36, region `europe-west9`, charts 0.6.0 and 0.7.0-rc.4). On GKE the volume uses the default `standard-rwo` StorageClass, the AOF was replayed after Autopilot preempted and rescheduled the pod, and with `auth.password` set the probes passed and clients got `NOAUTH` until they authenticated. Autopilot also adds a `RuntimeDefault` seccomp profile and drops `NET_RAW`, which minidis does not need.
+
+**Resources on GKE Autopilot.** Autopilot bills for the requested resources and fills in requests for containers that set none. With the default `resources: {}`, the pod gets 500m CPU and 2 GiB of memory, which is far more than minidis uses. Set `resources.requests` (and limits, if wanted) to sizes that fit the data set, for example with `--set resources.requests.cpu=250m --set resources.requests.memory=256Mi`.
 
 Because the claim is kept, changing `variant` from `full` to `lite` on an existing release reuses the old AOF. If that file holds commands the lite build does not support, the pod fails to start until the AOF is emptied or a new volume is used. See [Lite build](#lite-build).
 
