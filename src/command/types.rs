@@ -8,6 +8,9 @@ pub enum Command {
     Ping {
         message: Option<Vec<u8>>,
     },
+    Echo {
+        message: Vec<u8>,
+    },
     Hello {
         protover: Option<Protocol>,
         auth: Option<(Vec<u8>, Vec<u8>)>,
