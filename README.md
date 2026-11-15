@@ -45,7 +45,6 @@ The string commands follow Redis behavior:
 `HELLO`, `INFO`, `COMMAND` and `CLIENT SETINFO` exist so that clients can complete their connection handshake, and their replies are fixed or empty:
 
 - `HELLO ... SETNAME clientname` is accepted, but the name is not stored.
-
 - `INFO` has two sections, `server` and `persistence`. `persistence` always reports `loading:0`, because the server accepts connections only after the AOF has been replayed. An unknown section returns an empty reply.
 - `COMMAND` returns an empty array and `COMMAND DOCS` returns an empty map.
 - `CLIENT SETINFO` returns `OK` for any attribute and does not store the value.
@@ -80,6 +79,20 @@ Requests have the same format in both protocols. Only two kinds of replies diffe
 | --- | --- | --- |
 | Missing value, for example `GET` on a missing key | Null bulk string (`$-1`) | Null (`_`) |
 | `HGETALL` | Flat array of fields and values (`*`) | Map (`%`) |
+
+**Inline commands.** A request that does not start with `*` is read as an inline command: one line of text, as typed into `nc` or `telnet`. This is how Redis handles plain-text input:
+
+```sh
+printf 'SET greeting "hello world"\r\nGET greeting\r\n' | nc -q1 127.0.0.1 3131
+```
+
+- A line ends at `\n`. A `\r` right before it is removed.
+- Arguments are separated by spaces and tabs. An empty line is ignored.
+- Inside double quotes, spaces are kept and the escapes `\n`, `\r`, `\t`, `\b`, `\a`, `\xHH` (one byte in hex) and `\` followed by any other character are read. Inside single quotes, only `\'` is an escape. `""` and `''` are empty arguments.
+- A quote that is not closed, or a closing quote followed directly by another character, returns `-ERR Protocol error: unbalanced quotes in request` and closes the connection.
+- A line longer than 64 KiB without a `\n` returns `-ERR Protocol error: too big inline request` and closes the connection.
+
+Inline and RESP requests can be mixed on the same connection. Write commands received inline are still stored in the AOF in RESP format. The AOF replay itself accepts only RESP, so a damaged record is never read as an inline command.
 
 The following client libraries were checked with their default settings:
 
@@ -268,8 +281,8 @@ minidis is a single-node server and must not be scaled beyond one replica. Each 
 
 ```sh
 kubectl create secret generic minidis-auth --namespace minidis --from-literal=password='s3cret'
-helm install minidis oci://ghcr.io/shearlingenmouton/minidis-helm \\
-  --version <version> --namespace minidis --create-namespace \\
+helm install minidis oci://ghcr.io/shearlingenmouton/minidis-helm \
+  --version <version> --namespace minidis --create-namespace \
   --set auth.existingSecret=minidis-auth
 ```
 

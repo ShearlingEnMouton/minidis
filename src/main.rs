@@ -1,7 +1,9 @@
 use std::{
     net::SocketAddr,
-    sync::Arc,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -18,9 +20,12 @@ use tokio::{
     time::{MissedTickBehavior, interval},
 };
 
-use crate::aof::{Aof, FsyncPolicy};
 use crate::command::{Command, CommandError, Protocol, Reply};
 use crate::store::Store;
+use crate::{
+    aof::{Aof, FsyncPolicy},
+    resp::ParseError,
+};
 mod aof;
 mod command;
 mod healthcheck;
@@ -408,7 +413,13 @@ async fn handle_client(
         }
 
         loop {
-            match resp::parse_command(&buffer) {
+            let parse_res = if buffer.first() == Some(&b'*') {
+                resp::parse_command(&buffer)
+            } else {
+                resp::parse_inline_command(&buffer)
+            };
+
+            match parse_res {
                 Ok(Some((args, consumed))) => {
                     buffer.drain(..consumed);
                     if args.is_empty() {
@@ -430,7 +441,21 @@ async fn handle_client(
                 Ok(None) => break,
                 Err(e) => {
                     log_err!("Protocol error: {:?}", e);
-                    stream.write_all(b"-ERR Protocol error\r\n").await?;
+                    match e {
+                        ParseError::UnbalancedQuotes => {
+                            stream
+                                .write_all(b"-ERR Protocol error: unbalanced quotes in request\r\n")
+                                .await?
+                        }
+                        ParseError::InlineLineTooLong => {
+                            stream
+                                .write_all(b"-ERR Protocol error: too big inline request\r\n")
+                                .await?
+                        }
+                        _ => {
+                            stream.write_all(b"-ERR Protocol error\r\n").await?;
+                        }
+                    }
                     return Ok(());
                 }
             }
