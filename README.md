@@ -45,7 +45,6 @@ The string commands follow Redis behavior:
 `HELLO`, `INFO`, `COMMAND` and `CLIENT SETINFO` exist so that clients can complete their connection handshake, and their replies are fixed or empty:
 
 - `HELLO ... SETNAME clientname` is accepted, but the name is not stored.
-
 - `INFO` has two sections, `server` and `persistence`. `persistence` always reports `loading:0`, because the server accepts connections only after the AOF has been replayed. An unknown section returns an empty reply.
 - `COMMAND` returns an empty array and `COMMAND DOCS` returns an empty map.
 - `CLIENT SETINFO` returns `OK` for any attribute and does not store the value.
@@ -81,6 +80,20 @@ Requests have the same format in both protocols. Only two kinds of replies diffe
 | Missing value, for example `GET` on a missing key | Null bulk string (`$-1`) | Null (`_`) |
 | `HGETALL` | Flat array of fields and values (`*`) | Map (`%`) |
 
+**Inline commands.** A request that does not start with `*` is read as an inline command: one line of text, as typed into `nc` or `telnet`. This is how Redis handles plain-text input:
+
+```sh
+printf 'SET greeting "hello world"\r\nGET greeting\r\n' | nc -q1 127.0.0.1 3131
+```
+
+- A line ends at `\n`. A `\r` right before it is removed.
+- Arguments are separated by spaces and tabs. An empty line is ignored.
+- Inside double quotes, spaces are kept and the escapes `\n`, `\r`, `\t`, `\b`, `\a`, `\xHH` (one byte in hex) and `\` followed by any other character are read. Inside single quotes, only `\'` is an escape. `""` and `''` are empty arguments.
+- A quote that is not closed, or a closing quote followed directly by another character, returns `-ERR Protocol error: unbalanced quotes in request` and closes the connection.
+- A line longer than 64 KiB without a `\n` returns `-ERR Protocol error: too big inline request` and closes the connection.
+
+Inline and RESP requests can be mixed on the same connection. Write commands received inline are still stored in the AOF in RESP format. The AOF replay itself accepts only RESP, so a damaged record is never read as an inline command.
+
 The following client libraries were checked with their default settings:
 
 | Client | Version | Commands sent on connect |
@@ -91,6 +104,15 @@ The following client libraries were checked with their default settings:
 redis-py ignores the error returned for `CLIENT MAINT_NOTIFICATIONS`. ioredis sends `INFO` as a ready check and waits until `loading` is `0`.
 
 In interactive mode, `redis-cli` sends `COMMAND DOCS`, `INFO SERVER` and `COMMAND` on connect. A single command, such as `redis-cli ping`, sends only that command.
+
+`valkey-cli` 9.1.3 works the same way for single commands, `-3` (RESP3), `-r` (repeat), `--scan` and commands read from standard input. It authenticates with `-a`, `--user`/`--pass`, `VALKEYCLI_AUTH` or `REDISCLI_AUTH`. Some of its built-in tools need commands that minidis does not have:
+
+| Mode | Result |
+| --- | --- |
+| `--latency` | Works |
+| `--pipe` | Does not complete. After the data it sends an empty line and an `ECHO` marker, then waits for the marker to come back, and minidis has no `ECHO` |
+| `--bigkeys`, `--memkeys` | Fail, because they send `READONLY` first |
+| `--stat` | Runs, but shows invalid numbers, because `CONFIG GET` and most `INFO` fields are missing |
 
 ## Authentication
 
@@ -268,18 +290,24 @@ minidis is a single-node server and must not be scaled beyond one replica. Each 
 
 ```sh
 kubectl create secret generic minidis-auth --namespace minidis --from-literal=password='s3cret'
-helm install minidis oci://ghcr.io/shearlingenmouton/minidis-helm \\
-  --version <version> --namespace minidis --create-namespace \\
+helm install minidis oci://ghcr.io/shearlingenmouton/minidis-helm \
+  --version <version> --namespace minidis --create-namespace \
   --set auth.existingSecret=minidis-auth
 ```
 
 Kubernetes reads the Secret only when the container starts. After the password changes, restart the pod, for example with `kubectl rollout restart statefulset/<name>-sts`.
+
+`helm upgrade` without any `--set` or `-f` reuses the values of the previous release, so it does not turn authentication off. Pass `--reset-values` (or `--set auth.password=` with an empty value) to go back to the chart defaults.
 
 The claim template cannot be changed on an existing StatefulSet, so changing `pvc.storage` after installation makes `helm upgrade` fail. To resize the volume, edit the PersistentVolumeClaim directly. This works only if its StorageClass allows volume expansion.
 
 **Upgrading from 0.4.x or earlier.** Earlier charts ran a Deployment with a claim named `minidis-pvc`. An upgrade replaces the Deployment with the StatefulSet, which starts with a new, empty claim. The old claim is not deleted because it has the `helm.sh/resource-policy: keep` annotation, but the chart no longer uses it. To keep the data, scale the StatefulSet to zero, copy `appendonly.aof` from the old claim to the new one, then scale it back to one.
 
 **Probes.** The startup and liveness probes run `minidis healthcheck` inside the container. In that mode the binary does not start a server. It connects to the address given by `BIND_ADDR` and `EXPOSE_PORT` (`127.0.0.1` when the server binds to `0.0.0.0`, `::1` for `::`), sends `AUTH` with `REQUIREPASS` first when it is set, then sends `PING`, and exits with status 0 if the reply is `PONG`. Otherwise it prints the error to stderr and exits with status 1. Kubernetes runs the liveness probe only after the startup probe has succeeded, so a long AOF replay is not mistaken for a stuck server. After that, the liveness probe restarts the container when the server stops answering. The readiness probe checks the TCP port, which opens only after the replay.
+
+**Tested clusters.** The chart has been installed with its default values on k3s v1.36 and on GKE Autopilot (Kubernetes 1.36, region `europe-west9`, charts 0.6.0 and 0.7.0-rc.4). On GKE the volume uses the default `standard-rwo` StorageClass, the AOF was replayed after Autopilot preempted and rescheduled the pod, and with `auth.password` set the probes passed and clients got `NOAUTH` until they authenticated. Autopilot also adds a `RuntimeDefault` seccomp profile and drops `NET_RAW`, which minidis does not need.
+
+**Resources on GKE Autopilot.** Autopilot bills for the requested resources and fills in requests for containers that set none. With the default `resources: {}`, the pod gets 500m CPU and 2 GiB of memory, which is far more than minidis uses. Set `resources.requests` (and limits, if wanted) to sizes that fit the data set, for example with `--set resources.requests.cpu=250m --set resources.requests.memory=256Mi`.
 
 Because the claim is kept, changing `variant` from `full` to `lite` on an existing release reuses the old AOF. If that file holds commands the lite build does not support, the pod fails to start until the AOF is emptied or a new volume is used. See [Lite build](#lite-build).
 

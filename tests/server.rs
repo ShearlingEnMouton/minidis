@@ -364,7 +364,83 @@ fn a_protocol_error_closes_the_connection() {
     let server = Server::start(&dir.aof());
     let mut c = server.connect();
 
-    assert_eq!(send_raw(&mut c, b"?bad\r\n", 20), "-ERR Protocol error\r\n");
+    c.write_all(b"*1\r\n?bad\r\n").unwrap();
+    assert_eq!(read_until_closed(&mut c), "-ERR Protocol error\r\n");
+}
+
+#[test]
+fn inline_commands_are_read_line_by_line() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    let reply = send_raw(
+        &mut c,
+        b"SET k \"a b\"\r\nGET k\nPING\n\r\n  \nSET e ''\nGET e\n*1\r\n$4\r\nPING\r\nset q 'it\\'s'\nget q\nNOPE x\n",
+        86,
+    );
+    assert_eq!(
+        reply,
+        "+OK\r\n$3\r\na b\r\n+PONG\r\n+OK\r\n$0\r\n\r\n+PONG\r\n+OK\r\n$4\r\nit's\r\n-ERR unknown command 'NOPE', with args beginning with: 'x' \r\n"
+    );
+}
+
+#[test]
+fn an_inline_command_can_arrive_in_pieces() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    c.write_all(b"SET k ").unwrap();
+    c.flush().unwrap();
+    sleep(Duration::from_millis(50));
+    assert_eq!(
+        send_raw(&mut c, b"v\r\nGET k\r\n", 12),
+        "+OK\r\n$1\r\nv\r\n"
+    );
+}
+
+#[test]
+fn unbalanced_quotes_close_the_connection() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    c.write_all(b"GET \"abc\r\n").unwrap();
+    assert_eq!(
+        read_until_closed(&mut c),
+        "-ERR Protocol error: unbalanced quotes in request\r\n"
+    );
+}
+
+#[test]
+fn an_inline_line_over_64_kib_closes_the_connection() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    c.write_all(&vec![b'a'; 64 * 1024 + 1]).unwrap();
+    assert_eq!(
+        read_until_closed(&mut c),
+        "-ERR Protocol error: too big inline request\r\n"
+    );
+}
+
+#[test]
+fn inline_writes_survive_a_restart() {
+    let dir = TempDir::new();
+    let mut server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    assert_eq!(
+        send_raw(&mut c, b"SET k \"a b\"\r\nDEL missing\r\n", 9),
+        "+OK\r\n:0\r\n"
+    );
+    drop(c);
+    server.stop();
+
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    assert_eq!(send(&mut c, &["GET", "k"]), "$3\r\na b\r\n");
 }
 
 #[test]
