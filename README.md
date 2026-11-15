@@ -17,7 +17,7 @@ What it does:
 
 | Group | Commands |
 | --- | --- |
-| Connection | `PING [message]`, `AUTH [username] password`, `HELLO [protover [AUTH username password] [SETNAME clientname]]`, `CLIENT SETINFO attribute value` |
+| Connection | `PING [message]`, `ECHO message`, `AUTH [username] password`, `HELLO [protover [AUTH username password] [SETNAME clientname]]`, `CLIENT SETINFO attribute value` |
 | Strings | `GET`, `SET key value [EX seconds \| PX milliseconds \| EXAT unix-seconds \| PXAT unix-milliseconds]`, `SETNX`, `MSET key value [key value ...]`, `MGET key [key ...]`, `APPEND`, `INCR`, `DECR`, `INCRBY key increment`, `DECRBY key decrement` |
 | Keys | `DEL key [key ...]`, `EXISTS key [key ...]`, `TYPE`, `DBSIZE`, `KEYS pattern`, `SCAN cursor [MATCH pattern] [COUNT count]` |
 | Expiry | `TTL`, `PTTL`, `EXPIRE`, `PEXPIRE`, `PEXPIREAT`, `PERSIST` |
@@ -110,7 +110,7 @@ In interactive mode, `redis-cli` sends `COMMAND DOCS`, `INFO SERVER` and `COMMAN
 | Mode | Result |
 | --- | --- |
 | `--latency` | Works |
-| `--pipe` | Does not complete. After the data it sends an empty line and an `ECHO` marker, then waits for the marker to come back, and minidis has no `ECHO` |
+| `--pipe` | Works. After the data it sends an empty line and an `ECHO` marker, and finishes when the marker comes back |
 | `--bigkeys`, `--memkeys` | Fail, because they send `READONLY` first |
 | `--stat` | Runs, but shows invalid numbers, because `CONFIG GET` and most `INFO` fields are missing |
 
@@ -141,7 +141,7 @@ minidis has no TLS, so the password and all data cross the network in plain text
 
 ## Lite build
 
-The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`, plus the handshake commands `HELLO`, `INFO`, `COMMAND`, `COMMAND DOCS` and `CLIENT SETINFO`, so clients connect to it in the same way. RESP3 and authentication (`AUTH`, `REQUIREPASS`) are available in both builds. Every other command is rejected as an unknown command.
+The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`, plus the handshake commands `HELLO`, `INFO`, `COMMAND`, `COMMAND DOCS` and `CLIENT SETINFO`, so clients connect to it in the same way. `ECHO`, RESP3, inline commands and authentication (`AUTH`, `REQUIREPASS`) are available in both builds. Every other command is rejected as an unknown command.
 
 The list, hash and expiry code is removed at compile time, not filtered at runtime. It is behind the Cargo feature `full`, which is on by default. The lite build turns the feature off:
 

@@ -427,6 +427,28 @@ fn an_inline_line_over_64_kib_closes_the_connection() {
 }
 
 #[test]
+fn a_pipe_marker_comes_back_and_is_not_logged() {
+    let dir = TempDir::new();
+    let mut server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    let marker = "0123456789abcdefghij";
+    let mut request = SET_A.to_vec();
+    request.extend_from_slice(b"\r\n*2\r\n$4\r\nECHO\r\n$20\r\n");
+    request.extend_from_slice(marker.as_bytes());
+    request.extend_from_slice(b"\r\n");
+    assert_eq!(
+        send_raw(&mut c, &request, 31),
+        format!("+OK\r\n$20\r\n{marker}\r\n")
+    );
+    drop(c);
+    server.stop();
+
+    let aof = fs::read(dir.aof()).unwrap();
+    assert_eq!(aof, SET_A);
+}
+
+#[test]
 fn inline_writes_survive_a_restart() {
     let dir = TempDir::new();
     let mut server = Server::start(&dir.aof());

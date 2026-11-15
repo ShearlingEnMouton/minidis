@@ -115,6 +115,12 @@ impl Command {
                 }),
                 _ => Err(CommandError::WrongArity("ping")),
             },
+            b"ECHO" => match args.len() {
+                2 => Ok(Command::Echo {
+                    message: args[1].clone(),
+                }),
+                _ => Err(CommandError::WrongArity("echo")),
+            },
             b"HELLO" => match args.len() {
                 1 => Ok(Command::Hello {
                     protover: None,
@@ -493,6 +499,7 @@ impl Command {
             Command::Ping {
                 message: Some(message),
             } => Reply::Bulk(message),
+            Command::Echo { message } => Reply::Bulk(message),
             Command::Auth { .. } => {
                 Reply::Error("ERR AUTH is handled by the connection".to_owned())
             }
@@ -1278,6 +1285,7 @@ mod tests {
         assert!(parse(&["DEL", "k"]).unwrap().is_write());
         assert!(!parse(&["GET", "k"]).unwrap().is_write());
         assert!(!parse(&["PING"]).unwrap().is_write());
+        assert!(!parse(&["ECHO", "x"]).unwrap().is_write());
     }
 }
 
@@ -1313,6 +1321,28 @@ mod execute_tests {
         let store = Store::new();
         assert_eq!(run(&store, &["PING"]), "+PONG\r\n");
         assert_eq!(run(&store, &["PING", "hi"]), "$2\r\nhi\r\n");
+    }
+
+    #[test]
+    fn echo_replies_with_its_argument() {
+        let store = Store::new();
+        assert_eq!(run(&store, &["ECHO", "hello"]), "$5\r\nhello\r\n");
+        assert_eq!(run(&store, &["echo", ""]), "$0\r\n\r\n");
+        assert_eq!(
+            run_with(&store, &["ECHO", "a b"], &Protocol::Resp3),
+            "$3\r\na b\r\n"
+        );
+    }
+
+    #[test]
+    fn echo_takes_exactly_one_argument() {
+        let store = Store::new();
+        for parts in [&["ECHO"][..], &["ECHO", "a", "b"]] {
+            assert_eq!(
+                run(&store, parts),
+                "-ERR wrong number of arguments for 'echo' command\r\n"
+            );
+        }
     }
 
     #[test]
