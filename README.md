@@ -58,6 +58,7 @@ Not supported:
 - Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `SCAN ... TYPE`, and the count argument of `LPOP`/`RPOP`. `SET` and `SCAN` reply `ERR syntax error` to them, and the `EXPIRE` commands reply `ERR Unsupported option <option>`, as Redis does for an option it does not know
 - ACL users other than `default`, replication, pub/sub, transactions, and multiple databases
 - TLS. Passwords and data are sent in plain text
+- A memory limit (`maxmemory`) and eviction. The data set grows until the process runs out of memory, so size the memory available to it accordingly
 
 ## Client compatibility
 
@@ -212,6 +213,8 @@ Every write command that succeeds is appended to the AOF in RESP format. Reads a
 
 **Compaction.** `REWRITEAOF` shrinks the file. It writes the current data as the shortest list of commands (`SET`, `RPUSH`, `HSET`, plus `PXAT`/`PEXPIREAT` for keys with a TTL) to a temporary file, then renames it over the old one. If anything fails, the old file stays untouched. Writes are blocked while it runs, and it only runs when `REWRITEAOF` is called. There is no automatic trigger yet.
 
+**Compatibility.** The AOF format is part of the 1.x interface. Every 1.x release replays a file written by an earlier 1.x release of the same build. A file written by a newer release can contain commands that an older release does not support. In that case startup fails with an error that names the command, and the file is left untouched.
+
 ## Connection limits
 
 **Maximum clients.** When `MAX_CLIENTS` connections are already open, a new connection receives `-ERR max number of clients reached` and is closed right away, as in Redis. The slot is freed when one of the open connections closes. Connections opened by the Kubernetes probes count as clients too, so a server that stays full also fails its liveness probe and is restarted after `livenessProbe.failureThreshold` failed checks.
@@ -317,11 +320,22 @@ The claim template cannot be changed on an existing StatefulSet, so changing `pv
 
 Because the claim is kept, changing `variant` from `full` to `lite` on an existing release reuses the old AOF. If that file holds commands the lite build does not support, the pod fails to start until the AOF is emptied or a new volume is used. See [Lite build](#lite-build).
 
+## Versioning
+
+minidis follows [Semantic Versioning](https://semver.org/). Starting with 1.0.0, the following are stable within a major version:
+
+- The supported commands, their arguments and their replies, including error messages
+- The environment variables and their defaults
+- The AOF format, as described in [Persistence](#persistence-aof)
+- The Helm chart values and their defaults
+
+Minor releases can add commands, options, environment variables and chart values. Breaking changes to any of the items above require a new major version.
+
 ## Releases
 
-Pushing a tag like `v0.3.0` or `v0.3.0-rc.1` runs the release workflow, which:
+Pushing a tag like `v1.2.0` or `v1.2.0-rc.1` runs the release workflow, which:
 
-1. Builds the full and lite images from the same tag and pushes them to GHCR, tagged without the leading `v` (`0.3.0` and `0.3.0-lite`). `latest` is only ever given to the full image
+1. Builds the full and lite images from the same tag and pushes them to GHCR, tagged without the leading `v` (`1.2.0` and `1.2.0-lite`). `latest` is only ever given to the full image
 2. Packages the Helm chart with the same version and pushes it to GHCR
 3. Creates a GitHub Release, marked as a pre-release if the tag contains `-`
 
