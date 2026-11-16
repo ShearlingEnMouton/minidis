@@ -266,6 +266,7 @@ Main values:
 | `image.repository` | `ghcr.io/shearlingenmouton/minidis` | Image to run. Another repository, such as a mirror, must use the same tag scheme: `<version>` for the full build and `<version>-lite` for the lite build |
 | `image.tag` | chart `appVersion` | Image tag. When set, it is used as is and `variant` adds no suffix |
 | `variant` | `full` | `full` or `lite`. `lite` selects the image tag `<appVersion>-lite`. Any other value makes the chart fail to render |
+| `replicas` | `1` | Number of pods. Only `1` is accepted, because minidis is a single-node server. Any other value makes the chart fail to render |
 | `logLevel` | `INFO` | Sets `LOG_LEVEL` |
 | `purge.limit` | `1000` | Sets `PURGE_LIMIT`. Not set when `variant` is `lite` |
 | `purge.interval` | `100` | Sets `PURGE_INTERVAL`. Not set when `variant` is `lite` |
@@ -285,6 +286,7 @@ Main values:
 | `livenessProbe.failureThreshold` | `3` | Consecutive failed liveness checks before the container is restarted |
 | `livenessProbe.timeoutSeconds` | `10` | Time limit for one liveness check |
 | `pvc.storage` | `2Gi` | Size of the volume that holds the AOF |
+| `resources` | requests `100m` CPU and `128Mi` memory, no limits | Container resources. The whole data set is kept in memory, so raise `resources.requests.memory` for large data sets. Set `resources=null` to send no requests |
 
 The chart runs minidis as a StatefulSet with one replica. Besides the client Service, it creates a headless Service named `<name>-headless`, which the StatefulSet requires. The StatefulSet creates a `ReadWriteOnce` PersistentVolumeClaim from its claim template and mounts it at `/data`. The claim is named `minidis-data-<name>-sts-0`, which is `minidis-data-minidis-sts-0` by default. Kubernetes does not delete this claim when the StatefulSet is deleted, so `helm uninstall` keeps the data. To remove the data, delete the claim manually.
 
@@ -311,7 +313,7 @@ The claim template cannot be changed on an existing StatefulSet, so changing `pv
 
 **Tested clusters.** The chart has been installed with its default values on k3s v1.36 and on GKE Autopilot (Kubernetes 1.36, region `europe-west9`, charts 0.6.0 and 0.7.0-rc.4). On GKE the volume uses the default `standard-rwo` StorageClass, the AOF was replayed after Autopilot preempted and rescheduled the pod, and with `auth.password` set the probes passed and clients got `NOAUTH` until they authenticated. Autopilot also adds a `RuntimeDefault` seccomp profile and drops `NET_RAW`, which minidis does not need.
 
-**Resources on GKE Autopilot.** Autopilot bills for the requested resources and fills in requests for containers that set none. With the default `resources: {}`, the pod gets 500m CPU and 2 GiB of memory, which is far more than minidis uses. Set `resources.requests` (and limits, if wanted) to sizes that fit the data set, for example with `--set resources.requests.cpu=250m --set resources.requests.memory=256Mi`.
+**Resources on GKE Autopilot.** Autopilot bills for the requested resources and fills in requests for containers that set none (500m CPU and 2 GiB of memory for the default compute class). The chart's default requests of `100m` CPU and `128Mi` memory are within the CPU-to-memory ratio of the default compute class. On clusters without bursting support, Autopilot raises them to its minimum of 250m CPU and 512 MiB.
 
 Because the claim is kept, changing `variant` from `full` to `lite` on an existing release reuses the old AOF. If that file holds commands the lite build does not support, the pod fails to start until the AOF is emptied or a new volume is used. See [Lite build](#lite-build).
 

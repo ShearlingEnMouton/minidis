@@ -117,6 +117,30 @@ jobs:
           fi
           helm template minidis helm/minidis --set-string auth.password=1234 > /dev/null
 
+      - name: replicas accepts only 1
+        run: |
+          helm template minidis helm/minidis --set replicas=1 > /dev/null
+          for value in 0 2; do
+            if helm template minidis helm/minidis --set replicas=$value > /dev/null 2>&1; then
+              echo "replicas=$value was accepted"
+              exit 1
+            fi
+          done
+
+      - name: Default resources and probes
+        run: |
+          sts() { helm template minidis helm/minidis --show-only templates/statefulset.yaml "$@" \
+            | yq '.spec.template.spec.containers[0]'; }
+          expect() { [ "$2" = "$3" ] || { echo "$1: expected '$3', got '$2'"; exit 1; }; }
+          out=$(sts)
+          expect "cpu request" "$(yq '.resources.requests.cpu' <<< "$out")" 100m
+          expect "memory request" "$(yq '.resources.requests.memory' <<< "$out")" 128Mi
+          expect "limits" "$(yq '.resources.limits' <<< "$out")" null
+          for probe in startupProbe livenessProbe; do
+            expect "$probe" "$(yq ".$probe.exec.command | join(\" \")" <<< "$out")" "/usr/local/bin/minidis healthcheck"
+          done
+          expect "resources=null" "$(sts --set resources=null | yq '.resources')" null
+
   coverage:
     runs-on: ubuntu-latest
     permissions:

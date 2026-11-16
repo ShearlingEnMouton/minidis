@@ -1,5 +1,4 @@
 nameOverride: ""
-fullnameOverride: ""
 
 image:
   repository: ghcr.io/shearlingenmouton/minidis
@@ -8,6 +7,7 @@ image:
 
 imagePullSecrets: []
 
+# minidis is a single-node server; the schema accepts only 1.
 replicas: 1
 
 # enum: full(default) | lite
@@ -49,12 +49,6 @@ aof:
   # enum: always | everysec | no
   fsync: everysec
 
-healthCheckCmd:
-  exec:
-    command:
-    - /usr/local/bin/minidis
-    - healthcheck
-
 updateStrategy:
   type: RollingUpdate
 
@@ -93,17 +87,12 @@ service:
 pvc:
   storage: 2Gi
 
-resources: {}
-  # We usually recommend not to specify default resources and to leave this as a conscious
-  # choice for the user. This also increases chances charts run on environments with little
-  # resources, such as Minikube. If you do want to specify resources, uncomment the following
-  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+# Requests only, no limits. Raise memory.requests for large data sets: the whole
+# data set is kept in memory.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
 
 nodeSelector: {}
 
