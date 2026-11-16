@@ -13,8 +13,7 @@ pub use types::Command;
 
 impl Command {
     fn parse_int(arg: &[u8]) -> Result<i64, CommandError> {
-        let s = std::str::from_utf8(arg).map_err(|_| CommandError::NotAnInteger)?;
-        s.parse().map_err(|_| CommandError::NotAnInteger)
+        crate::store::check_int(arg).ok_or(CommandError::NotAnInteger)
     }
     #[cfg(feature = "full")]
     fn expire_command(
@@ -231,6 +230,7 @@ impl Command {
                         ttl: Some(ttl),
                     })
                 }
+                4.. => Err(CommandError::SyntaxError),
                 _ => Err(CommandError::WrongArity("set")),
             },
             b"DEL" => match args.len() {
@@ -339,11 +339,17 @@ impl Command {
             #[cfg(feature = "full")]
             b"EXPIRE" => match args.len() {
                 3 => Self::expire_command(&args[1], &args[2], Duration::from_secs, "expire"),
+                4.. => Err(CommandError::UnsupportedOption(
+                    String::from_utf8_lossy(&args[3]).into_owned(),
+                )),
                 _ => Err(CommandError::WrongArity("expire")),
             },
             #[cfg(feature = "full")]
             b"PEXPIRE" => match args.len() {
                 3 => Self::expire_command(&args[1], &args[2], Duration::from_millis, "pexpire"),
+                4.. => Err(CommandError::UnsupportedOption(
+                    String::from_utf8_lossy(&args[3]).into_owned(),
+                )),
                 _ => Err(CommandError::WrongArity("pexpire")),
             },
             #[cfg(feature = "full")]
@@ -351,6 +357,9 @@ impl Command {
                 3 => {
                     Self::expire_at_command(&args[1], &args[2], Duration::from_millis, "pexpireat")
                 }
+                4.. => Err(CommandError::UnsupportedOption(
+                    String::from_utf8_lossy(&args[3]).into_owned(),
+                )),
                 _ => Err(CommandError::WrongArity("pexpireat")),
             },
             #[cfg(feature = "full")]
@@ -566,7 +575,7 @@ impl Command {
                     Ok(n) => Reply::Integer(n),
                     Err(e) => CommandError::from(e).into(),
                 },
-                None => CommandError::Overflow.into(),
+                None => CommandError::DecrementOverflow.into(),
             },
             #[cfg(feature = "full")]
             Command::Keys { pattern } => {
@@ -802,13 +811,42 @@ mod tests {
             parse(&["SET", "k", "v", "FOO", "10"]),
             Err(CommandError::SyntaxError)
         ));
-        assert!(matches!(
-            parse(&["SET", "k", "v", "EX"]),
-            Err(CommandError::WrongArity("set"))
-        ));
+        for parts in [
+            &["SET", "k", "v", "EX"][..],
+            &["SET", "k", "v", "NX"],
+            &["SET", "k", "v", "GET"],
+            &["SET", "k", "v", "PX", "100", "EX", "10"],
+            &["SET", "k", "v", "EX", "10", "NX"],
+        ] {
+            assert!(
+                matches!(parse(parts), Err(CommandError::SyntaxError)),
+                "{parts:?}"
+            );
+        }
         assert!(matches!(
             parse(&["SET", "k"]),
             Err(CommandError::WrongArity("set"))
+        ));
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn expire_options_are_reported_as_unsupported() {
+        for parts in [
+            &["EXPIRE", "k", "10", "NX"][..],
+            &["PEXPIRE", "k", "10", "xx"],
+            &["PEXPIREAT", "k", "10", "GT", "LT"],
+        ] {
+            match parse(parts) {
+                Err(CommandError::UnsupportedOption(option)) => {
+                    assert_eq!(option, parts[3], "{parts:?}")
+                }
+                other => panic!("{parts:?}: {other:?}"),
+            }
+        }
+        assert!(matches!(
+            parse(&["EXPIRE", "k"]),
+            Err(CommandError::WrongArity("expire"))
         ));
     }
 
@@ -1269,13 +1307,17 @@ mod tests {
             &["SET", "k", "v", "EX", "10"][..],
             &["SET", "k", "v", "PX", "10"][..],
             &["SET", "k", "v", "EX"][..],
-            &["SET", "k"][..],
+            &["SET", "k", "v", "NX"][..],
         ] {
             assert!(
-                matches!(parse(parts), Err(CommandError::WrongArity("set"))),
+                matches!(parse(parts), Err(CommandError::SyntaxError)),
                 "{parts:?}"
             );
         }
+        assert!(matches!(
+            parse(&["SET", "k"]),
+            Err(CommandError::WrongArity("set"))
+        ));
     }
 
     #[cfg(not(feature = "full"))]
@@ -1703,13 +1745,41 @@ mod execute_tests {
         );
         assert_eq!(
             run(&store, &["DECRBY", "n", "-9223372036854775808"]),
-            "-ERR increment or decrement would overflow\r\n"
+            "-ERR decrement would overflow\r\n"
         );
         assert_eq!(run(&store, &["GET", "n"]), "$-1\r\n");
         assert_eq!(run(&store, &["DECRBY", "l", "1"]), WRONGTYPE);
         assert_eq!(
             run(&store, &["MSET", "a"]),
             "-ERR wrong number of arguments for 'mset' command\r\n"
+        );
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn integer_arguments_and_values_follow_the_redis_rules() {
+        let store = Store::new();
+        const NOT_AN_INTEGER: &str = "-ERR value is not an integer or out of range\r\n";
+        for value in ["+5", "05", "-0", "-05"] {
+            run(&store, &["SET", "n", value]);
+            assert_eq!(run(&store, &["INCR", "n"]), NOT_AN_INTEGER, "{value:?}");
+            assert_eq!(run(&store, &["GET", "n"]), bulk(value), "{value:?}");
+            run(&store, &["SET", "n", "1"]);
+            for parts in [
+                &["INCRBY", "n", value][..],
+                &["DECRBY", "n", value],
+                &["EXPIRE", "n", value],
+                &["SET", "n", "1", "EX", value],
+                &["LRANGE", "n", value, "1"],
+            ] {
+                assert_eq!(run(&store, parts), NOT_AN_INTEGER, "{parts:?}");
+            }
+        }
+        run(&store, &["SET", "n", "0"]);
+        assert_eq!(run(&store, &["INCR", "n"]), ":1\r\n");
+        assert_eq!(
+            run(&store, &["INCRBY", "n", "-9223372036854775808"]),
+            ":-9223372036854775807\r\n"
         );
     }
 
@@ -1723,7 +1793,7 @@ mod execute_tests {
         );
         assert_eq!(
             run(&store, &["SET", "k", "v", "EX", "10"]),
-            "-ERR wrong number of arguments for 'set' command\r\n"
+            "-ERR syntax error\r\n"
         );
     }
 }

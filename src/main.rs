@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
+    logger::check_env()?;
     let bind_addr = env_or("BIND_ADDR", "0.0.0.0");
     let port = env_or("EXPOSE_PORT", "3131");
     #[cfg(feature = "full")]

@@ -29,15 +29,20 @@ static LEVEL: LazyLock<String> = LazyLock::new(|| {
     };
 
     if !LOG_LEVELS.contains_key(level.as_str()) {
-        println!(
-            "Invalid log level: {}. Available log levels are ERR, WARN, INFO, DEBUG. Using default log level INFO",
-            level
-        );
         return String::from("INFO");
     }
 
     level
 });
+
+pub fn check_env() -> Result<(), String> {
+    match std::env::var("LOG_LEVEL") {
+        Ok(level) if !LOG_LEVELS.contains_key(level.to_uppercase().as_str()) => {
+            Err("LOG_LEVEL must be one of ERR, WARN, INFO, DEBUG".to_string())
+        }
+        _ => Ok(()),
+    }
+}
 
 pub static CURRENT_LEVEL: LazyLock<LogLevel> = LazyLock::new(|| LOG_LEVELS[LEVEL.as_str()]);
 

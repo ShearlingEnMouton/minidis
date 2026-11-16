@@ -103,6 +103,14 @@ impl From<CommandError> for Reply {
                 Reply::Error("ERR increment or decrement would overflow".to_owned())
             }
             #[cfg(feature = "full")]
+            CommandError::DecrementOverflow => {
+                Reply::Error("ERR decrement would overflow".to_owned())
+            }
+            #[cfg(feature = "full")]
+            CommandError::UnsupportedOption(option) => {
+                Reply::Error(format!("ERR Unsupported option {option}"))
+            }
+            #[cfg(feature = "full")]
             CommandError::InvalidCursor => Reply::Error("ERR invalid cursor".to_owned()),
         }
     }

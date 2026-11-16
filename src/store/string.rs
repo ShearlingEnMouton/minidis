@@ -2,8 +2,7 @@ use super::{EntryType, Store, StoreError};
 
 impl Store {
     fn parse_int(arg: &[u8]) -> Result<i64, StoreError> {
-        let s = std::str::from_utf8(arg).map_err(|_| StoreError::NotAnInteger)?;
-        s.parse().map_err(|_| StoreError::NotAnInteger)
+        super::check_int(arg).ok_or(StoreError::NotAnInteger)
     }
 
     pub fn exists(&self, keys: &[Vec<u8>]) -> usize {

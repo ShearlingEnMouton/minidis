@@ -22,6 +22,10 @@ pub enum CommandError {
     #[cfg(feature = "full")]
     Overflow,
     #[cfg(feature = "full")]
+    DecrementOverflow,
+    #[cfg(feature = "full")]
+    UnsupportedOption(String),
+    #[cfg(feature = "full")]
     InvalidCursor,
 }
 impl From<StoreError> for CommandError {
