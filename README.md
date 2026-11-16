@@ -323,7 +323,7 @@ Pushing a tag like `v0.3.0` or `v0.3.0-rc.1` runs the release workflow, which:
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and commit conventions and the checks a change must pass.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and commit conventions and the checks a change must pass. Throughput measurements against Redis are in [BENCHMARK.md](BENCHMARK.md).
 
 ```sh
 cargo build
@@ -370,6 +370,7 @@ The CodeQL workflow scans the Rust code and the workflows on every push to `main
 | `src/logger/` | Log levels and output |
 | `src/limits.rs` | Protocol size limits |
 | `helm/minidis/` | Helm chart |
+| `benchmarks/` | Benchmark script and raw results, see [BENCHMARK.md](BENCHMARK.md) |
 | `.githooks/` | Git hooks |
 | `.github/workflows/` | CI, CodeQL and release workflows |
 | `.github/codeql/` | CodeQL configuration |
