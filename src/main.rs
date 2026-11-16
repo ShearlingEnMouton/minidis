@@ -387,6 +387,7 @@ async fn handle_client(
         client_id,
         requirepass,
     } = ctx;
+    let mut out: Vec<u8> = Vec::new();
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut protocol = Protocol::Resp2;
     let mut authenticated = requirepass.is_none();
@@ -428,7 +429,6 @@ async fn handle_client(
                     if args.is_empty() {
                         continue;
                     }
-                    let mut out = Vec::new();
                     dispatch(
                         &args,
                         store,
@@ -439,29 +439,34 @@ async fn handle_client(
                         requirepass,
                     )
                     .encode(&mut out, &protocol);
-                    stream.write_all(&out).await?;
                 }
                 Ok(None) => break,
                 Err(e) => {
                     log_err!("Protocol error: {:?}", e);
                     match e {
                         ParseError::UnbalancedQuotes => {
-                            stream
-                                .write_all(b"-ERR Protocol error: unbalanced quotes in request\r\n")
-                                .await?
+                            out.extend_from_slice(
+                                b"-ERR Protocol error: unbalanced quotes in request\r\n",
+                            );
                         }
                         ParseError::InlineLineTooLong => {
-                            stream
-                                .write_all(b"-ERR Protocol error: too big inline request\r\n")
-                                .await?
+                            out.extend_from_slice(
+                                b"-ERR Protocol error: too big inline request\r\n",
+                            );
                         }
                         _ => {
-                            stream.write_all(b"-ERR Protocol error\r\n").await?;
+                            out.extend_from_slice(b"-ERR Protocol error\r\n");
                         }
                     }
+                    stream.write_all(&out).await?;
                     return Ok(());
                 }
             }
+        }
+
+        if !out.is_empty() {
+            stream.write_all(&out).await?;
+            out.clear();
         }
 
         if buffer.len() > limits::MAX_BUFFER_SIZE {
