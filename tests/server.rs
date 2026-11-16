@@ -670,7 +670,7 @@ fn lite_rejects_full_only_commands() {
     }
     assert_eq!(
         send(&mut c, &["SET", "k", "v", "EX", "10"]),
-        "-ERR wrong number of arguments for 'set' command\r\n"
+        "-ERR syntax error\r\n"
     );
     assert_eq!(send(&mut c, &["PING"]), "+PONG\r\n");
 }
@@ -806,12 +806,21 @@ fn invalid_connection_limits_stop_the_server_from_starting() {
 }
 
 #[test]
-fn an_invalid_log_level_falls_back_to_info() {
+fn an_invalid_log_level_stops_the_server_from_starting() {
+    let dir = TempDir::new();
+    let mut server = Server::spawn_with_env(&dir.aof(), "always", &[("LOG_LEVEL", "bogus")]);
+    let status = server.wait_for_exit(Duration::from_secs(5));
+    assert!(!status.success());
+    assert!(!dir.aof().exists());
+}
+
+#[test]
+fn the_log_level_name_is_case_insensitive() {
     let dir = TempDir::new();
     let mut server = Server::spawn_with_stdout(
         &dir.aof(),
         "always",
-        &[("LOG_LEVEL", "bogus")],
+        &[("LOG_LEVEL", "debug")],
         Stdio::piped(),
     );
     server.wait_until_ready();
@@ -828,9 +837,7 @@ fn an_invalid_log_level_falls_back_to_info() {
         .unwrap()
         .read_to_string(&mut out)
         .unwrap();
-    assert!(out.contains("Invalid log level: BOGUS"), "{out}");
-    assert!(out.contains("[INFO] Listening on"), "{out}");
-    assert!(!out.contains("[DEBUG]"), "{out}");
+    assert!(out.contains("[DEBUG]"), "{out}");
 }
 
 fn healthcheck(port: u16, aof: &PathBuf) -> std::process::Output {

@@ -27,11 +27,13 @@ What it does:
 
 Using a command on a key of the wrong type returns `WRONGTYPE`, like Redis does.
 
+Integer arguments and the values read by the counter commands use the Redis integer format: an optional `-` followed by decimal digits, with no leading `+` and no leading zeros, within the 64-bit signed range. Values such as `+5`, `05` and `-0` return `ERR value is not an integer or out of range`.
+
 The string commands follow Redis behavior:
 
 - `MSET` and `SETNX` store values without a TTL. `MSET` replaces existing keys of any type in one step, so other clients never see a partial update.
 - `APPEND`, `INCR`, `DECR`, `INCRBY` and `DECRBY` keep the TTL of an existing key. A missing key is created without a TTL, and the counter commands start from `0`.
-- `INCR`, `DECR`, `INCRBY` and `DECRBY` accept values and amounts that fit in a 64-bit signed integer. Other values return `ERR value is not an integer or out of range`, and a result outside that range returns `ERR increment or decrement would overflow`. The value is left unchanged in both cases.
+- `INCR`, `DECR`, `INCRBY` and `DECRBY` accept values and amounts that fit in a 64-bit signed integer. Other values return `ERR value is not an integer or out of range`, and a result outside that range returns `ERR increment or decrement would overflow` (`ERR decrement would overflow` for `DECRBY key -9223372036854775808`, as in Redis). The value is left unchanged in both cases.
 - `MGET` returns a null for keys that are missing or do not hold a string, instead of an error.
 - `EXISTS` counts a key once per occurrence in the arguments, so `EXISTS a a` returns `2` when `a` exists.
 
@@ -53,7 +55,7 @@ The string commands follow Redis behavior:
 Not supported:
 
 - String commands not listed above, such as `INCRBYFLOAT`, `STRLEN`, `GETRANGE` and `GETSET`
-- Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `SCAN ... TYPE`, and the count argument of `LPOP`/`RPOP`
+- Options not listed above, such as `SET ... NX/XX/GET/KEEPTTL`, `EXPIRE ... NX/XX/GT/LT`, `SCAN ... TYPE`, and the count argument of `LPOP`/`RPOP`. `SET` and `SCAN` reply `ERR syntax error` to them, and the `EXPIRE` commands reply `ERR Unsupported option <option>`, as Redis does for an option it does not know
 - ACL users other than `default`, replication, pub/sub, transactions, and multiple databases
 - TLS. Passwords and data are sent in plain text
 
@@ -143,7 +145,7 @@ minidis has no TLS, so the password and all data cross the network in plain text
 
 ## Lite build
 
-The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`, plus the handshake commands `HELLO`, `INFO`, `COMMAND`, `COMMAND DOCS` and `CLIENT SETINFO`, so clients connect to it in the same way. `ECHO`, RESP3, inline commands and authentication (`AUTH`, `REQUIREPASS`) are available in both builds. Every other command is rejected as an unknown command.
+The lite build is a minimal variant for deployments that only need a small string store. It supports `PING`, `GET`, `SET key value` without options, and `DEL`, plus the handshake commands `HELLO`, `INFO`, `COMMAND`, `COMMAND DOCS` and `CLIENT SETINFO`, so clients connect to it in the same way. `ECHO`, RESP3, inline commands and authentication (`AUTH`, `REQUIREPASS`) are available in both builds. Every other command is rejected as an unknown command, and `SET` with options replies `ERR syntax error`.
 
 The list, hash and expiry code is removed at compile time, not filtered at runtime. It is behind the Cargo feature `full`, which is on by default. The lite build turns the feature off:
 
@@ -180,7 +182,7 @@ All settings are environment variables.
 | --- | --- | --- |
 | `BIND_ADDR` | `0.0.0.0` | Address to listen on |
 | `EXPOSE_PORT` | `3131` | Port to listen on |
-| `LOG_LEVEL` | `INFO` | One of `ERR`, `WARN`, `INFO`, `DEBUG`. Other values fall back to `INFO` |
+| `LOG_LEVEL` | `INFO` | One of `ERR`, `WARN`, `INFO`, `DEBUG`, in any case |
 | `PURGE_LIMIT` | `1000` | Most expired keys the background cleanup removes in one pass. Must be greater than 0. Full build only |
 | `PURGE_INTERVAL` | `100` | Milliseconds between cleanup passes. Must be greater than 0. Full build only |
 | `AOF_PATH` | `/data/appendonly.aof` | Location of the append-only file |
@@ -190,7 +192,7 @@ All settings are environment variables.
 | `IDLE_TIMEOUT` | `3600` | Seconds without data from a client after which its connection is closed. `0` disables the timeout. See [Connection limits](#connection-limits) |
 | `REQUIREPASS` | empty | Password clients must send with `AUTH` or `HELLO ... AUTH`. Empty disables authentication. See [Authentication](#authentication) |
 
-The server exits at startup if `AOF_FSYNC`, `SHUTDOWN_TIMEOUT`, `MAX_CLIENTS` or `IDLE_TIMEOUT` has an invalid value, and in the full build also if `PURGE_LIMIT` or `PURGE_INTERVAL` has one.
+The server exits at startup if `LOG_LEVEL`, `AOF_FSYNC`, `SHUTDOWN_TIMEOUT`, `MAX_CLIENTS` or `IDLE_TIMEOUT` has an invalid value, and in the full build also if `PURGE_LIMIT` or `PURGE_INTERVAL` has one.
 
 ## Persistence (AOF)
 

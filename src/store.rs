@@ -87,6 +87,30 @@ pub struct SnapshotEntry {
     pub ttl: Option<Duration>,
 }
 
+pub(crate) fn check_int(arg: &[u8]) -> Option<i64> {
+    match arg.len() {
+        0 => None,
+        1 => {
+            if matches!(arg, b"-" | b"+") {
+                return None;
+            }
+            let s = std::str::from_utf8(arg).ok()?;
+            s.parse().ok()
+        }
+        _ => {
+            if matches!(arg.first(), Some(b'0' | b'+')) {
+                return None;
+            }
+            if let Some(rest) = arg.strip_prefix(b"-")
+                && rest.starts_with(b"0")
+            {
+                return None;
+            }
+            std::str::from_utf8(arg).ok()?.parse().ok()
+        }
+    }
+}
+
 impl Store {
     #[cfg(feature = "full")]
     fn hasher_helper(key: &[u8]) -> u64 {
@@ -784,5 +808,40 @@ mod lite_tests {
         assert_eq!(store.del(&[k("a"), k("b"), k("missing")]), 2);
         assert_eq!(store.del(&[k("a")]), 0);
         assert_eq!(store.get(&k("a")).unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod check_int_tests {
+    use super::check_int;
+
+    #[test]
+    fn integers_follow_the_redis_rules() {
+        for (input, expected) in [
+            ("0", Some(0)),
+            ("5", Some(5)),
+            ("-5", Some(-5)),
+            ("10", Some(10)),
+            ("9223372036854775807", Some(i64::MAX)),
+            ("-9223372036854775808", Some(i64::MIN)),
+            ("", None),
+            ("-", None),
+            ("+", None),
+            ("+5", None),
+            ("05", None),
+            ("00", None),
+            ("-0", None),
+            ("-05", None),
+            ("--5", None),
+            ("-+5", None),
+            (" 5", None),
+            ("5 ", None),
+            ("1e3", None),
+            ("9223372036854775808", None),
+            ("-9223372036854775809", None),
+        ] {
+            assert_eq!(check_int(input.as_bytes()), expected, "{input:?}");
+        }
+        assert_eq!(check_int(b"\xff"), None);
     }
 }
