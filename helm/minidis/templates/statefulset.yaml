@@ -54,12 +54,18 @@ spec:
                 key: {{ include "minidisservice.secretPasswordKey" . }}
 {{- end }}
         startupProbe:
-          {{- toYaml .Values.healthCheckCmd | nindent 10 }}
+          exec:
+            command:
+            - /usr/local/bin/minidis
+            - healthcheck
           periodSeconds: {{ .Values.startupProbe.periodSeconds }}
           timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
           failureThreshold: {{ .Values.startupProbe.failureThreshold }}
         livenessProbe:
-          {{- toYaml .Values.healthCheckCmd | nindent 10 }}
+          exec:
+            command:
+            - /usr/local/bin/minidis
+            - healthcheck
           periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
           timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
           failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
