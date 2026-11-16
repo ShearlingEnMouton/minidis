@@ -329,6 +329,58 @@ fn pipelined_commands_are_answered_in_order() {
 }
 
 #[test]
+fn a_large_pipeline_is_answered_in_full() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    let count = 5000;
+    let mut batch = Vec::new();
+    for i in 0..count {
+        let key = format!("k{i}");
+        batch.extend_from_slice(
+            format!("*3\r\n$3\r\nSET\r\n${}\r\n{key}\r\n$1\r\nv\r\n", key.len()).as_bytes(),
+        );
+    }
+
+    let reply = send_raw(&mut c, &batch, count * 5);
+    assert_eq!(reply, "+OK\r\n".repeat(count));
+    let last = format!("k{}", count - 1);
+    assert_eq!(send(&mut c, &["GET", last.as_str()]), "$1\r\nv\r\n");
+}
+
+#[test]
+fn small_pipelined_batches_are_not_delayed() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+    let batch = b"*1\r\n$4\r\nPING\r\n".repeat(16);
+    let expected = "+PONG\r\n".repeat(16);
+
+    let started = Instant::now();
+    for _ in 0..100 {
+        assert_eq!(send_raw(&mut c, &batch, expected.len()), expected);
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "100 batches of 16 commands took {elapsed:?}"
+    );
+}
+
+#[test]
+fn replies_before_a_protocol_error_are_still_sent() {
+    let dir = TempDir::new();
+    let server = Server::start(&dir.aof());
+    let mut c = server.connect();
+
+    c.write_all(b"SET k v\r\nGET \"abc\r\n").unwrap();
+    assert_eq!(
+        read_until_closed(&mut c),
+        "+OK\r\n-ERR Protocol error: unbalanced quotes in request\r\n"
+    );
+}
+
+#[test]
 fn a_command_split_across_two_writes_is_still_answered() {
     let dir = TempDir::new();
     let server = Server::start(&dir.aof());

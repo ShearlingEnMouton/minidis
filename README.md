@@ -94,6 +94,8 @@ printf 'SET greeting "hello world"\r\nGET greeting\r\n' | nc -q1 127.0.0.1 3131
 
 Inline and RESP requests can be mixed on the same connection. Write commands received inline are still stored in the AOF in RESP format. The AOF replay itself accepts only RESP, so a damaged record is never read as an inline command.
 
+**Pipelining.** A client can send many requests without waiting for the replies. They are executed in order, and the replies to all requests read from the socket in one pass are written back together. Nagle's algorithm is disabled on client connections (`TCP_NODELAY`), as in Redis, so small replies are sent right away instead of waiting for the client's TCP acknowledgement.
+
 The following client libraries were checked with their default settings:
 
 | Client | Version | Commands sent on connect |
@@ -321,7 +323,7 @@ Pushing a tag like `v0.3.0` or `v0.3.0-rc.1` runs the release workflow, which:
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and commit conventions and the checks a change must pass.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch and commit conventions and the checks a change must pass. Throughput measurements against Redis are in [BENCHMARK.md](BENCHMARK.md).
 
 ```sh
 cargo build
@@ -368,6 +370,7 @@ The CodeQL workflow scans the Rust code and the workflows on every push to `main
 | `src/logger/` | Log levels and output |
 | `src/limits.rs` | Protocol size limits |
 | `helm/minidis/` | Helm chart |
+| `benchmarks/` | Benchmark script and raw results, see [BENCHMARK.md](BENCHMARK.md) |
 | `.githooks/` | Git hooks |
 | `.github/workflows/` | CI, CodeQL and release workflows |
 | `.github/codeql/` | CodeQL configuration |
