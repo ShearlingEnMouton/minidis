@@ -136,6 +136,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     drop(socket);
                     continue;
                 }
+                if let Err(e) = socket.set_nodelay(true) {
+                    log_warn!("Failed to set TCP_NODELAY for {}: {:?}", peer_addr, e);
+                }
 
                 let aof = aof.clone();
                 let client_token = cancellation_token.clone();
